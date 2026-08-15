@@ -1,0 +1,149 @@
+version: 2
+
+models:
+  - name: hourly_air_quality_facts
+    description: Hourly air quality fact table
+    tests:
+      - dbt_utils.recency:
+          datepart: hour
+          field: hour_start_utc
+          interval: 2  # Data should be less than 2 hours old
+    columns:
+      - name: fact_key
+        description: Surrogate key (unique identifier)
+        tests:
+          - not_null
+          - unique
+
+      - name: location_id
+        description: Location identifier
+        tests:
+          - not_null
+
+      - name: pollutant
+        description: Pollutant code
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['pm25', 'pm10', 'no2', 'o3', 'so2']
+
+      - name: hour_start_utc
+        description: Hour boundary in UTC
+        tests:
+          - not_null
+
+      - name: observation_count
+        description: Number of observations
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              column_type: bigint
+
+      - name: mean_value
+        description: Mean concentration
+        tests:
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              column_type: numeric
+
+      - name: median_value
+        description: Median concentration
+        tests:
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              column_type: numeric
+
+      - name: min_value
+        description: Minimum concentration
+        tests:
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              column_type: numeric
+          - dbt_expectations.expect_column_values_to_be_greater_than_or_equal:
+              min_value: 0
+
+      - name: max_value
+        description: Maximum concentration
+        tests:
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              column_type: numeric
+          - dbt_expectations.expect_column_values_to_be_greater_than_or_equal:
+              min_value: 0
+
+      - name: coverage_pct
+        description: Coverage percentage (0-100)
+        tests:
+          - not_null
+          - coverage_pct_between_0_100
+
+      - name: anomaly_flag
+        description: Anomaly indicator (0 or 1)
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+      - name: quality_score
+        description: Quality score (0-100)
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 100
+
+  - name: hourly_weather_facts
+    description: Hourly weather fact table
+    tests:
+      - dbt_utils.recency:
+          datepart: hour
+          field: hour_start_utc
+          interval: 2
+    columns:
+      - name: fact_key
+        description: Surrogate key (unique identifier)
+        tests:
+          - not_null
+          - unique
+
+      - name: location_id
+        description: Location identifier
+        tests:
+          - not_null
+
+      - name: hour_start_utc
+        description: Hour boundary in UTC
+        tests:
+          - not_null
+
+      - name: observation_count
+        description: Number of observations
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              column_type: bigint
+
+      - name: mean_temperature_c
+        description: Mean temperature in Celsius
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: -60
+              max_value: 60
+
+      - name: mean_humidity_pct
+        description: Mean humidity (0-100%)
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 100
+
+      - name: coverage_pct
+        description: Coverage percentage (0-100)
+        tests:
+          - not_null
+          - coverage_pct_between_0_100
+
+      - name: quality_score
+        description: Quality score (0-100)
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 100

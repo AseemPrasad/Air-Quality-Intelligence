@@ -1,0 +1,239 @@
+
+# Air Quality Intelligence dbt Project
+name: 'air_quality_intelligence'
+version: '1.0.0'
+config-version: 2
+
+# Configuration for seed files, model paths, etc.
+profile: 'air_quality'
+model-paths: ['models']
+analysis-paths: ['analysis']
+test-paths: ['tests']
+data-paths: ['data']
+macro-paths: ['macros']
+snapshot-paths: ['snapshots']
+target-path: 'target'
+clean-targets:
+  - 'target'
+  - 'dbt_packages'
+
+# Model configuration
+models:
+  air_quality_intelligence:
+    # Global defaults
+    +materialized: view
+    +on_schema_change: fail
+    +pre-hook: "{{ log('Running ' ~ this.name ~ '...', info=true) }}"
+
+    # Staging models - raw data cleaning
+    staging:
+      +materialized: view
+      +tags: ['staging']
+      stg_air_quality_raw:
+        +description: |
+          Raw air quality observations from OpenAQ.
+          - Deduplicates by (source, station_id, sensor_id, pollutant, observed_at)
+          - Filters nulls and invalid values
+        +columns:
+          source:
+            +description: 'Data source (e.g., openaq)'
+            +tests: ['not_null', { accepted_values: { values: ['openaq'] } }]
+          station_id:
+            +description: 'Station identifier'
+            +tests: ['not_null']
+          sensor_id:
+            +description: 'Sensor identifier within station'
+            +tests: ['not_null']
+          pollutant:
+            +description: 'Pollutant code (pm25, pm10, no2, o3, so2)'
+            +tests: ['not_null', { accepted_values: { values: ['pm25', 'pm10', 'no2', 'o3', 'so2'] } }]
+          value:
+            +description: 'Measured concentration'
+            +tests: ['not_null']
+          observed_at:
+            +description: 'Observation timestamp (UTC)'
+            +tests: ['not_null']
+
+      stg_weather_raw:
+        +description: |
+          Raw weather observations from Open-Meteo.
+          - Converts to UTC
+          - Filters missing temperatures
+        +columns:
+          source:
+            +description: 'Data source (e.g., open_meteo)'
+            +tests: ['not_null']
+          location_id:
+            +description: 'Location identifier'
+            +tests: ['not_null']
+          temperature_c:
+            +description: 'Temperature in Celsius'
+            +tests: ['not_null']
+          humidity_pct:
+            +description: 'Relative humidity (0-100%)'
+            +tests: ['not_null']
+
+    # Intermediate models - data transformation
+    intermediate:
+      +materialized: view
+      +tags: ['intermediate']
+      int_air_quality_deduplicated:
+        +description: |
+          Deduplicated air quality records with unit normalization.
+          - Removes duplicates (keeps latest by ingested_at)
+          - Converts all units to µg/m³
+          - One row per unique (location, pollutant, observed_at)
+        +columns:
+          pollutant:
+            +description: 'Pollutant code'
+            +tests: ['not_null', 'accepted_values']
+          value:
+            +description: 'Normalized concentration in µg/m³'
+            +tests: ['not_null']
+          observed_at_utc:
+            +description: 'Observation time (UTC)'
+            +tests: ['not_null']
+
+      int_weather_aligned:
+        +description: |
+          Weather observations aligned to hourly intervals.
+          - Rounds observation_at down to nearest hour
+          - Keeps first observation per hour
+        +columns:
+          hour_start_utc:
+            +description: 'Hour boundary (UTC)'
+            +tests: ['not_null']
+          temperature_c:
+            +description: 'Temperature in Celsius'
+            +tests: ['not_null']
+
+    # Mart models - analytical facts and dimensions
+    marts:
+      +materialized: table
+      +on_schema_change: fail
+      +tags: ['marts']
+
+      facts:
+        hourly_air_quality_facts:
+          +description: |
+            Hourly air quality fact table.
+            Grain: location_id, pollutant, hour_start_utc
+
+            Metrics:
+            - observation_count: # of raw records in hour
+            - mean_value: arithmetic mean concentration
+            - median_value: robust median (preferred over mean)
+            - min_value, max_value: range
+            - stddev_value: standard deviation
+            - coverage_pct: % of expected observations received
+            - anomaly_flag: 1 if median deviates >3*MAD from baseline
+            - quality_score: 0-100, based on coverage + deviation
+
+            Assumptions:
+            - Measurement interval: 60 minutes
+            - All values normalized to µg/m³
+            - Baselines from 365-day historical rolling window
+          +columns:
+            fact_key:
+              +description: 'Surrogate key'
+              +tests: ['not_null', 'unique']
+            location_id:
+              +description: 'Location identifier'
+              +tests: ['not_null', { relationships: { to: ref('dim_location'), field: 'location_id' } }]
+            pollutant:
+              +description: 'Pollutant code'
+              +tests: ['not_null', 'accepted_values']
+            hour_start_utc:
+              +description: 'Hour start in UTC'
+              +tests: ['not_null']
+            observation_count:
+              +description: 'Number of observations in hour'
+              +tests: ['not_null', { dbt_expectations.expect_column_values_to_be_of_type: { column_type: 'integer' } }]
+            mean_value:
+              +description: 'Mean concentration (µg/m³)'
+            median_value:
+              +description: 'Median concentration (µg/m³), preferred estimate'
+            coverage_pct:
+              +description: 'Coverage as % of expected observations'
+              +tests: ['not_null', { dbt_expectations.expect_column_values_to_be_between: { min_value: 0, max_value: 100 } }]
+            anomaly_flag:
+              +description: '1 if z-score > 3 from baseline'
+              +tests: ['not_null', 'accepted_values']
+            quality_score:
+              +description: 'Quality score (0-100)'
+              +tests: ['not_null', { dbt_expectations.expect_column_values_to_be_between: { min_value: 0, max_value: 100 } }]
+
+        hourly_weather_facts:
+          +description: |
+            Hourly weather fact table.
+            Grain: location_id, hour_start_utc
+
+            Metrics (means for continuous variables):
+            - mean_temperature_c
+            - mean_humidity_pct
+            - mean_wind_speed_kmh
+            - mean_wind_direction_deg
+            - mean_pressure_hpa
+            - total_precipitation_mm (sum)
+            - mean_cloud_cover_pct
+
+            Assumptions:
+            - All timestamps in UTC
+            - Wind direction averaged (circular mean approximated as arithmetic mean)
+            - Precipitation cumulative over hour
+          +columns:
+            fact_key:
+              +description: 'Surrogate key'
+              +tests: ['not_null', 'unique']
+            location_id:
+              +description: 'Location identifier'
+              +tests: ['not_null']
+            hour_start_utc:
+              +description: 'Hour start in UTC'
+              +tests: ['not_null']
+            mean_temperature_c:
+              +description: 'Mean temperature in Celsius'
+              +tests: ['not_null']
+            coverage_pct:
+              +description: 'Coverage as % of expected observations'
+              +tests: ['not_null', { dbt_expectations.expect_column_values_to_be_between: { min_value: 0, max_value: 100 } }]
+
+      dimensions:
+        dim_location:
+          +materialized: table
+          +description: 'Location dimension table'
+        dim_station:
+          +materialized: table
+          +description: 'Station dimension table'
+        dim_air_quality_baselines:
+          +materialized: table
+          +description: 'Historical baselines for anomaly detection'
+
+# Packages
+packages:
+  - package: dbt-labs/dbt_utils
+    version: 1.1.1
+  - package: elementary-data/elementary
+    version: 0.11.1
+
+# Seeds configuration
+seeds:
+  air_quality_intelligence:
+    +quote_columns: true
+
+# Variables
+vars:
+  # Measurement intervals
+  air_quality_interval_minutes: 60  # Hourly measurement interval
+  weather_interval_minutes: 60
+
+  # Anomaly detection thresholds
+  anomaly_z_threshold: 3.0  # Number of MADs above/below baseline median
+
+  # Data quality thresholds
+  min_coverage_pct: 60  # Minimum coverage for valid hourly record
+  min_observation_count: 1  # Minimum observations per hour
+
+  # Baselines
+  baseline_lookback_days: 365
+  baseline_min_observations: 60
