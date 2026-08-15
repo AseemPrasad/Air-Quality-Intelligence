@@ -1,53 +1,75 @@
-# FastAPI service
+# Air Quality Intelligence Platform - API Service
+# Multi-stage build for optimized production image
+
+# ============================================================================
+# BUILDER STAGE: Compile dependencies
+# ============================================================================
 FROM python:3.12.1-slim-bookworm as builder
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
+# Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd -r app && useradd -r -g app app
-WORKDIR /app
-RUN chown -R app:app /app
+# Create non-root user for build
+RUN groupadd -r aqworker && useradd -r -g aqworker aqworker
 
-USER app
+WORKDIR /build
+RUN chown -R aqworker:aqworker /build
+
+USER aqworker
 
 # Copy and install dependencies
 COPY pyproject.toml ./
-RUN pip install --user -e .
+RUN pip install --user --no-warn-script-location -e .
 
-# Final stage
+# ============================================================================
+# RUNTIME STAGE: Minimal production image
+# ============================================================================
 FROM python:3.12.1-slim-bookworm
 
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+LABEL maintainer="Air Quality Engineering Team" \
+      description="FastAPI service for Air Quality Intelligence Platform" \
+      version="0.1.0"
 
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+# Install runtime dependencies only
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     curl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd -r app && useradd -r -g app app
-WORKDIR /app
-RUN chown -R app:app /app
+# Create non-root user
+RUN groupadd -r aqworker && useradd -r -g aqworker aqworker
 
-USER app
+WORKDIR /app
+RUN chown -R aqworker:aqworker /app
+
+USER aqworker
 
 # Copy Python dependencies from builder
-COPY --from=builder --chown=app:app /root/.local /home/app/.local
-ENV PATH=/home/app/.local/bin:$PATH
+COPY --from=builder --chown=aqworker:aqworker /root/.local /home/aqworker/.local
 
-# Copy source code
-COPY --chown=app:app src/ /app/src/
+# Copy application source
+COPY --chown=aqworker:aqworker src/ /app/src/
+COPY --chown=aqworker:aqworker configs/ /app/configs/
+
+ENV PATH=/home/aqworker/.local/bin:$PATH
 
 EXPOSE 8000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+# Health check: verify API responds
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8000/api/system/health || exit 1
 
 CMD ["uvicorn", "aq_engine.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

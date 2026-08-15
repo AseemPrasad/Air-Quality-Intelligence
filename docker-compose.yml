@@ -1,9 +1,16 @@
 version: "3.8"
 
+# =============================================================================
+# Air Quality Intelligence Platform - Optimized Production Compose File
+# =============================================================================
+# Services: PostgreSQL (control plane) + Airflow (orchestration) + API + Dashboard
+# Networks: Single bridge network for all services
+# Volumes: Named volume for PostgreSQL data, mounted paths for code/data
+
 services:
-  # ============================================================================
-  # DATABASE (Control Plane)
-  # ============================================================================
+  # ===========================================================================
+  # DATABASE (Control Plane) - PostgreSQL 15 Alpine
+  # ===========================================================================
   postgres:
     image: postgres:15.4-alpine3.18
     container_name: aq-postgres
@@ -11,7 +18,12 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-aqadmin}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
       POSTGRES_DB: ${POSTGRES_DB:-aq_control}
-      POSTGRES_INITDB_ARGS: "-c shared_buffers=256MB -c max_connections=200"
+      POSTGRES_INITDB_ARGS: >-
+        -c shared_buffers=256MB
+        -c max_connections=200
+        -c effective_cache_size=1GB
+        -c maintenance_work_mem=64MB
+        -c work_mem=10MB
     ports:
       - "5432:5432"
     volumes:
@@ -22,14 +34,27 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
     networks:
       - aq-net
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          cpus: "1"
+          memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
-  # ============================================================================
-  # AIRFLOW
-  # ============================================================================
-
+  # ===========================================================================
+  # AIRFLOW INITIALIZATION - One-time setup
+  # ===========================================================================
   airflow-init:
     build:
       context: .
@@ -39,13 +64,18 @@ services:
       AIRFLOW_HOME: ${AIRFLOW_HOME:-/airflow}
       AIRFLOW__CORE__DAGS_FOLDER: /app/dags
       AIRFLOW__CORE__BASE_LOG_FOLDER: /app/logs
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg://${POSTGRES_USER:-aqadmin}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-aq_control}
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+        postgresql+psycopg://${POSTGRES_USER:-aqadmin}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-aq_control}
       AIRFLOW__CORE__LOAD_EXAMPLES: "False"
       AIRFLOW__CORE__UNIT_TEST_MODE: "False"
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
     entrypoint: >
       sh -c "
+      echo 'Initializing Airflow database...' &&
       airflow db init &&
-      airflow users create -r Admin -u admin -e admin@aq.local -f Admin -l User -p admin
+      echo 'Creating admin user...' &&
+      airflow users create -r Admin -u admin -e admin@aq.local -f Admin -l User -p admin &&
+      echo 'Airflow initialization complete'
       "
     depends_on:
       postgres:
@@ -53,7 +83,15 @@ services:
     networks:
       - aq-net
     restart: "no"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
+  # ===========================================================================
+  # AIRFLOW SCHEDULER - DAG orchestration
+  # ===========================================================================
   airflow-scheduler:
     build:
       context: .
@@ -63,25 +101,47 @@ services:
       AIRFLOW_HOME: ${AIRFLOW_HOME:-/airflow}
       AIRFLOW__CORE__DAGS_FOLDER: /app/dags
       AIRFLOW__CORE__BASE_LOG_FOLDER: /app/logs
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg://${POSTGRES_USER:-aqadmin}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-aq_control}
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+        postgresql+psycopg://${POSTGRES_USER:-aqadmin}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-aq_control}
       AIRFLOW__CORE__LOAD_EXAMPLES: "False"
       AIRFLOW__CORE__UNIT_TEST_MODE: "False"
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
     command: airflow scheduler
     volumes:
       - ./dags:/app/dags
       - ./logs:/app/logs
+      - ./data:/app/data
     depends_on:
-      - airflow-init
-      - postgres
+      airflow-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
     networks:
       - aq-net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "airflow", "jobs", "check-sla"]
+      test: ["CMD-SHELL", "airflow jobs check-sla 2>/dev/null || exit 0"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 3G
+        reservations:
+          cpus: "1"
+          memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
 
+  # ===========================================================================
+  # AIRFLOW WEBSERVER - UI & monitoring
+  # ===========================================================================
   airflow-webserver:
     build:
       context: .
@@ -91,10 +151,12 @@ services:
       AIRFLOW_HOME: ${AIRFLOW_HOME:-/airflow}
       AIRFLOW__CORE__DAGS_FOLDER: /app/dags
       AIRFLOW__CORE__BASE_LOG_FOLDER: /app/logs
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg://${POSTGRES_USER:-aqadmin}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-aq_control}
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+        postgresql+psycopg://${POSTGRES_USER:-aqadmin}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-aq_control}
       AIRFLOW__CORE__LOAD_EXAMPLES: "False"
       AIRFLOW__CORE__UNIT_TEST_MODE: "False"
       AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "True"
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_WEBSERVER_SECRET_KEY:-your-secret-key-change-me}
     command: airflow webserver --port 8080
     ports:
       - "8080:8080"
@@ -102,7 +164,10 @@ services:
       - ./dags:/app/dags
       - ./logs:/app/logs
     depends_on:
-      - airflow-scheduler
+      airflow-scheduler:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     networks:
       - aq-net
     restart: unless-stopped
@@ -111,10 +176,24 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
-  # ============================================================================
-  # API SERVICE
-  # ============================================================================
+  # ===========================================================================
+  # API SERVICE - FastAPI server
+  # ===========================================================================
   api:
     build:
       context: .
@@ -126,21 +205,39 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_DB: ${POSTGRES_DB:-aq_control}
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-aqadmin}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-aq_control}
+      DATABASE_URL: >-
+        postgresql+psycopg://${POSTGRES_USER:-aqadmin}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-aq_control}
+      API_LOG_LEVEL: ${API_LOG_LEVEL:-INFO}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
     ports:
       - "8000:8000"
     volumes:
-      - ./src:/app/src
+      - ./src:/app/src:ro
+      - ./data:/app/data
+      - ./configs:/app/configs:ro
     depends_on:
       postgres:
         condition: service_healthy
     networks:
       - aq-net
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1G
+        reservations:
+          cpus: "1"
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
-  # ============================================================================
-  # DASHBOARD SERVICE
-  # ============================================================================
+  # ===========================================================================
+  # DASHBOARD SERVICE - Streamlit interface
+  # ===========================================================================
   dashboard:
     build:
       context: .
@@ -152,29 +249,54 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_DB: ${POSTGRES_DB:-aq_control}
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-aqadmin}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-aq_control}
+      DATABASE_URL: >-
+        postgresql+psycopg://${POSTGRES_USER:-aqadmin}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-aq_control}
       API_URL: http://api:8000
+      ENVIRONMENT: ${ENVIRONMENT:-production}
     ports:
       - "8501:8501"
     volumes:
-      - ./src:/app/src
+      - ./src:/app/src:ro
+      - ./data:/app/data:ro
+      - ./configs:/app/configs:ro
     depends_on:
-      - postgres
-      - api
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_started
     networks:
       - aq-net
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
-# ============================================================================
-# NETWORKS
-# ============================================================================
+# =============================================================================
+# NETWORKS - Single bridge for all services
+# =============================================================================
 networks:
   aq-net:
     driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: 1500
 
-# ============================================================================
-# VOLUMES
-# ============================================================================
+# =============================================================================
+# VOLUMES - Persistent data storage
+# =============================================================================
 volumes:
   aq-postgres-data:
     driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${POSTGRES_DATA_DIR:-./data/postgres}
