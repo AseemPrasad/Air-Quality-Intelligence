@@ -1,128 +1,47 @@
-# Logging Configuration for Air Quality Intelligence Platform
-# Uses Python's logging.config.dictConfig format
-
 version: 1
 disable_existing_loggers: false
 
 formatters:
-  # JSON formatter for structured logging
   json:
-    class: pythonjsonlogger.jsonlogger.JsonFormatter
-    format: '%(asctime)s %(name)s %(levelname)s %(message)s %(exc_info)s'
+    (): pythonjsonlogger.jsonlogger.JsonFormatter
+    fmt: '%(timestamp)s %(level)s %(name)s %(operation)s %(source)s %(status)s %(message)s'
+    rename_fields:
+      asctime: timestamp
+      levelname: level
 
-  # Standard text formatter for console (development)
   standard:
-    format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-
-  # Detailed formatter with more context
-  detailed:
-    format: '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
+    format: '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+    datefmt: '%Y-%m-%d %H:%M:%S'
 
 handlers:
-  # Console output
   console:
     class: logging.StreamHandler
     level: INFO
     formatter: json
     stream: ext://sys.stdout
 
-  # File output with rotation
   file:
     class: logging.handlers.RotatingFileHandler
     level: DEBUG
     formatter: json
-    filename: logs/aq_engine.log
-    maxBytes: 10485760      # 10 MB
-    backupCount: 5          # Keep 5 rotated logs
-
-  # Separate file for errors
-  error_file:
-    class: logging.handlers.RotatingFileHandler
-    level: ERROR
-    formatter: detailed
-    filename: logs/aq_engine_errors.log
+    filename: ./data/logs/aq_engine.log
     maxBytes: 10485760
     backupCount: 5
 
-  # Separate file for ingestion operations
-  ingestion_file:
+  error_file:
     class: logging.handlers.RotatingFileHandler
-    level: DEBUG
+    level: ERROR
     formatter: json
-    filename: logs/ingestion.log
-    maxBytes: 10485760
-    backupCount: 3
-
-  # Separate file for ML operations
-  ml_file:
-    class: logging.handlers.RotatingFileHandler
-    level: DEBUG
-    formatter: json
-    filename: logs/ml.log
+    filename: ./data/logs/aq_engine_error.log
     maxBytes: 10485760
     backupCount: 3
 
 loggers:
-  # Root logger
-  aq_engine:
-    level: DEBUG
-    handlers: [console, file]
-    propagate: false
-
-  # Ingestion module
-  aq_engine.connectors:
-    level: DEBUG
-    handlers: [console, ingestion_file]
-    propagate: false
-
-  # Quality layer
-  aq_engine.quality:
-    level: DEBUG
-    handlers: [console, file]
-    propagate: false
-
-  # Analytics layer
-  aq_engine.analytics:
-    level: DEBUG
-    handlers: [console, file]
-    propagate: false
-
-  # ML module
-  aq_engine.ml:
-    level: DEBUG
-    handlers: [console, ml_file]
-    propagate: false
-
-  # API module
-  aq_engine.api:
+  src.aq_engine:
     level: INFO
-    handlers: [console, file]
-    propagate: false
-
-  # Dashboard module
-  aq_engine.dashboard:
-    level: INFO
-    handlers: [console, file]
-    propagate: false
-
-  # Airflow (less verbose)
-  airflow:
-    level: WARNING
-    handlers: [console]
-    propagate: false
-
-  # SQLAlchemy (less verbose)
-  sqlalchemy:
-    level: WARNING
-    handlers: [console]
-    propagate: false
-
-  # Polars (less verbose)
-  polars:
-    level: WARNING
-    handlers: [console]
+    handlers: [console, file, error_file]
     propagate: false
 
 root:
-  level: DEBUG
+  level: INFO
   handlers: [console, file, error_file]

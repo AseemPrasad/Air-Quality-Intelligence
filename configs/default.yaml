@@ -1,0 +1,53 @@
+# Air Quality Intelligence Platform - Default Configuration
+
+database:
+  url: "postgresql://aq_user:aq_password@localhost:5432/air_quality"
+  user: "aq_user"
+  password: "aq_password"
+  host: "localhost"
+  port: 5432
+  database: "air_quality"
+  pool_size: 10
+  max_overflow: 20
+  echo: false
+
+data:
+  parquet_path: "./data/parquet"
+  checkpoint_path: "./data/checkpoints"
+  log_path: "./data/logs"
+
+api:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 4
+  timeout_seconds: 30
+  log_level: "INFO"
+
+connectors:
+  openaq_api_key: ""  # Set via env var OPENAQ_API_KEY
+  openaq_api_url: "https://api.openaq.org/v2"
+  openaq_timeout: 30
+  openmeteo_api_url: "https://api.open-meteo.com/v1"
+  openmeteo_timeout: 30
+
+airflow:
+  home: "/opt/airflow"
+  dags_folder: "/opt/airflow/dags"
+  load_examples: false
+  load_default_connections: false
+
+ml:
+  enable_training: true
+  enable_inference: true
+  training_days: 90
+  promotion_threshold: 0.05  # 5% MAE improvement required
+  test_fraction: 0.15
+
+analytics:
+  baseline_days: 365
+  anomaly_z_threshold_low: 2.0
+  anomaly_z_threshold_high: 3.0
+  anomaly_z_threshold_extreme: 5.0
+  event_min_anomalies: 3
+  event_min_window_hours: 4
+  event_merge_gap_minutes: 30

@@ -14,7 +14,7 @@ authors = [
 ]
 
 [project.scripts]
-aq = "aq_engine.cli:app"
+aq = "aq_engine.cli:cli_app"
 
 [project.optional-dependencies]
 dev = [
@@ -97,3 +97,4 @@ python-json-logger = "==2.0.7"
 # Utils
 python-dateutil = "==2.8.2"
 requests = "==2.31.0"
+rich = "==13.7.0"
