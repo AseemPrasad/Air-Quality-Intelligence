@@ -1,0 +1,53 @@
+# FastAPI service
+FROM python:3.12.1-slim-bookworm as builder
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r app && useradd -r -g app app
+WORKDIR /app
+RUN chown -R app:app /app
+
+USER app
+
+# Copy and install dependencies
+COPY pyproject.toml ./
+RUN pip install --user -e .
+
+# Final stage
+FROM python:3.12.1-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r app && useradd -r -g app app
+WORKDIR /app
+RUN chown -R app:app /app
+
+USER app
+
+# Copy Python dependencies from builder
+COPY --from=builder --chown=app:app /root/.local /home/app/.local
+ENV PATH=/home/app/.local/bin:$PATH
+
+# Copy source code
+COPY --chown=app:app src/ /app/src/
+
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+CMD ["uvicorn", "aq_engine.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

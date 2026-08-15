@@ -1,0 +1,54 @@
+# Airflow scheduler/worker service
+FROM python:3.12.1-slim-bookworm as builder
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r app && useradd -r -g app app
+WORKDIR /app
+RUN chown -R app:app /app
+
+USER app
+
+# Copy and install dependencies
+COPY pyproject.toml ./
+RUN pip install --user -e .
+
+# Final stage
+FROM python:3.12.1-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    AIRFLOW__CORE__LOAD_EXAMPLES=False \
+    AIRFLOW__CORE__UNIT_TEST_MODE=False
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r app && useradd -r -g app app
+WORKDIR /app
+RUN chown -R app:app /app
+
+USER app
+
+# Copy Python dependencies from builder
+COPY --from=builder --chown=app:app /root/.local /home/app/.local
+ENV PATH=/home/app/.local/bin:$PATH
+
+# Copy source code and DAGs
+COPY --chown=app:app src/ /app/src/
+COPY --chown=app:app dags/ /app/dags/
+COPY --chown=app:app dbt/ /app/dbt/
+
+# Default command: start airflow scheduler
+# Can be overridden to run worker, webserver, or shell
+CMD ["airflow", "scheduler"]

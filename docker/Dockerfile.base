@@ -1,0 +1,29 @@
+# Base Dockerfile for all services
+# Python 3.12 slim with system dependencies and non-root user
+FROM python:3.12.1-slim-bookworm
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create app user (non-root)
+RUN groupadd -r app && useradd -r -g app app
+
+# Create app directory
+WORKDIR /app
+
+# Set ownership to app user
+RUN chown -R app:app /app
+
+# Switch to non-root user
+USER app
