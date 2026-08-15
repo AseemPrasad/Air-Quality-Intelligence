@@ -171,6 +171,108 @@ class BaselineResponse(BaseModel):
     p99: float
 
 
+# Health and Quality Models
+class DatabaseComponent(BaseModel):
+    """Database component status."""
+
+    status: str
+    latency_ms: int
+    connected: bool
+
+
+class IngestionComponent(BaseModel):
+    """Data ingestion component status."""
+
+    status: str
+    last_openaq_run: datetime
+    last_weather_run: datetime
+    openaq_freshness_minutes: int
+    weather_freshness_minutes: int
+
+
+class DataQualityComponent(BaseModel):
+    """Data quality component status."""
+
+    status: str
+    total_records_last_24h: int
+    rejected_records_last_24h: int
+    rejection_rate_pct: float
+    coverage_pct: float
+
+
+class MLModelsComponent(BaseModel):
+    """ML models component status."""
+
+    status: str
+    production_model: str
+    model_mae: float
+    model_age_hours: int
+
+
+class HealthComponents(BaseModel):
+    """All system components."""
+
+    database: DatabaseComponent
+    ingestion: IngestionComponent
+    data_quality: DataQualityComponent
+    ml_models: MLModelsComponent
+
+
+class HealthResponse(BaseModel):
+    """System health response."""
+
+    system_status: str
+    timestamp: datetime
+    components: HealthComponents
+
+
+class QualityBySource(BaseModel):
+    """Data quality metrics by source."""
+
+    source: str
+    total: int
+    valid: int
+    suspicious: int
+    invalid: int
+
+
+class QualityByLocation(BaseModel):
+    """Data quality metrics by location."""
+
+    location_id: str
+    total: int
+    valid_pct: float
+    coverage_pct: float
+
+
+class StationHealth(BaseModel):
+    """Station health status."""
+
+    station_id: str
+    health_score: int = Field(..., ge=0, le=100)
+    status: str
+
+
+class QualitySummary(BaseModel):
+    """Quality metrics summary."""
+
+    total_records: int
+    valid_records: int
+    suspicious_records: int
+    invalid_records: int
+    duplicate_records: int
+
+
+class QualityResponse(BaseModel):
+    """Data quality report."""
+
+    report_time: datetime
+    summary: QualitySummary
+    by_source: List[QualityBySource]
+    by_location: List[QualityByLocation]
+    by_station_health: List[StationHealth]
+
+
 # Mock data
 MOCK_LOCATIONS = [
     LocationMetadata(
@@ -609,4 +711,177 @@ async def get_baseline(
         p90=71.3,
         p95=78.5,
         p99=92.1,
+    )
+
+
+@router.get(
+    "/system/health",
+    response_model=HealthResponse,
+    summary="System health status",
+    description="Get realtime health status of all system components",
+)
+async def get_system_health() -> HealthResponse:
+    """Get system health status.
+
+    Returns:
+        System health status with component details
+
+    Raises:
+        HTTPException: 503 if critical component failure
+    """
+    current_time = datetime.now(timezone.utc)
+
+    # Database component
+    db_component = DatabaseComponent(
+        status="ok",
+        latency_ms=5,
+        connected=True,
+    )
+
+    # Ingestion component
+    ingestion_component = IngestionComponent(
+        status="ok",
+        last_openaq_run=current_time.replace(minute=25),
+        last_weather_run=current_time.replace(minute=26),
+        openaq_freshness_minutes=5,
+        weather_freshness_minutes=4,
+    )
+
+    # Data quality component
+    quality_component = DataQualityComponent(
+        status="ok",
+        total_records_last_24h=50000,
+        rejected_records_last_24h=125,
+        rejection_rate_pct=0.25,
+        coverage_pct=96.5,
+    )
+
+    # ML models component
+    models_component = MLModelsComponent(
+        status="ok",
+        production_model="2026-08-15_hgb",
+        model_mae=12.3,
+        model_age_hours=6,
+    )
+
+    # Determine system status
+    all_ok = all(
+        comp.status == "ok"
+        for comp in [db_component, ingestion_component, quality_component, models_component]
+    )
+    system_status = "healthy" if all_ok else "degraded"
+
+    if not all_ok:
+        # Return degraded status
+        logger.warning(f"System degraded: status={system_status}")
+
+    logger.info(f"System health check: {system_status}")
+
+    return HealthResponse(
+        system_status=system_status,
+        timestamp=current_time,
+        components=HealthComponents(
+            database=db_component,
+            ingestion=ingestion_component,
+            data_quality=quality_component,
+            ml_models=models_component,
+        ),
+    )
+
+
+@router.get(
+    "/system/quality",
+    response_model=QualityResponse,
+    summary="Data quality report",
+    description="Get detailed data quality metrics and station health",
+)
+async def get_system_quality() -> QualityResponse:
+    """Get data quality report.
+
+    Returns:
+        Detailed quality metrics by source, location, and station
+
+    Raises:
+        HTTPException: 500 on data access error
+    """
+    current_time = datetime.now(timezone.utc)
+
+    # Quality summary
+    summary = QualitySummary(
+        total_records=50000,
+        valid_records=49875,
+        suspicious_records=100,
+        invalid_records=25,
+        duplicate_records=50,
+    )
+
+    # By source
+    by_source = [
+        QualityBySource(
+            source="openaq",
+            total=25000,
+            valid=24950,
+            suspicious=40,
+            invalid=10,
+        ),
+        QualityBySource(
+            source="open_meteo",
+            total=25000,
+            valid=24925,
+            suspicious=60,
+            invalid=15,
+        ),
+    ]
+
+    # By location
+    by_location = [
+        QualityByLocation(
+            location_id="kolkata_001",
+            total=5000,
+            valid_pct=99.8,
+            coverage_pct=100.0,
+        ),
+        QualityByLocation(
+            location_id="delhi_001",
+            total=45000,
+            valid_pct=99.7,
+            coverage_pct=98.5,
+        ),
+    ]
+
+    # By station health (sorted by score descending)
+    by_station_health = [
+        StationHealth(
+            station_id="stn_001",
+            health_score=95,
+            status="healthy",
+        ),
+        StationHealth(
+            station_id="stn_002",
+            health_score=87,
+            status="healthy",
+        ),
+        StationHealth(
+            station_id="stn_003",
+            health_score=45,
+            status="offline",
+        ),
+        StationHealth(
+            station_id="stn_004",
+            health_score=72,
+            status="degraded",
+        ),
+    ]
+
+    # Sort by score descending
+    by_station_health = sorted(by_station_health, key=lambda x: x.health_score, reverse=True)
+
+    logger.info(f"Data quality report generated with {len(by_station_health)} stations")
+
+    return QualityResponse(
+        report_time=current_time,
+        summary=summary,
+        by_source=by_source,
+        by_location=by_location,
+        by_station_health=by_station_health,
     )
