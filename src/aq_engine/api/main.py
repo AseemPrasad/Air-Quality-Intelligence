@@ -11,6 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 
+from aq_engine.api.observations import router as observations_router
+
 logger = logging.getLogger(__name__)
 
 # Version info
@@ -84,6 +86,9 @@ app = FastAPI(
     version=__version__,
     lifespan=lifespan,
 )
+
+# Include routers
+app.include_router(observations_router)
 
 
 # CORS middleware
