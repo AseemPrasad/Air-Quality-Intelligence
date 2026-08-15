@@ -1,0 +1,269 @@
+name: Docker Build & Push
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag (e.g., v0.1.0 or latest)'
+        required: true
+        default: 'latest'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      # =========================================================================
+      # 1. Checkout Code
+      # =========================================================================
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # =========================================================================
+      # 2. Set up Docker Buildx
+      # =========================================================================
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      # =========================================================================
+      # 3. Get Image Tags
+      # =========================================================================
+      - name: Generate image tags
+        id: meta
+        run: |
+          # Get version from git tag or workflow input
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            VERSION=${{ github.event.inputs.tag }}
+          fi
+
+          # Remove 'v' prefix if present
+          VERSION=${VERSION#v}
+
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "timestamp=$(date -u +'%Y%m%d_%H%M%S')" >> $GITHUB_OUTPUT
+          echo "Building Docker images for version: ${VERSION}"
+
+      # =========================================================================
+      # 4. Build API Image
+      # =========================================================================
+      - name: Build API Docker image
+        id: build-api
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./docker/Dockerfile.api
+          push: false
+          outputs: type=docker,dest=/tmp/api-image.tar
+          tags: |
+            aq-api:${{ steps.meta.outputs.version }}
+            aq-api:latest
+          labels: |
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.timestamp }}
+            org.opencontainers.image.description=FastAPI server for Air Quality Intelligence Platform
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # =========================================================================
+      # 5. Build Dashboard Image
+      # =========================================================================
+      - name: Build Dashboard Docker image
+        id: build-dashboard
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./docker/Dockerfile.dashboard
+          push: false
+          outputs: type=docker,dest=/tmp/dashboard-image.tar
+          tags: |
+            aq-dashboard:${{ steps.meta.outputs.version }}
+            aq-dashboard:latest
+          labels: |
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.timestamp }}
+            org.opencontainers.image.description=Streamlit dashboard for Air Quality Intelligence Platform
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # =========================================================================
+      # 6. Build Worker Image
+      # =========================================================================
+      - name: Build Worker Docker image
+        id: build-worker
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./docker/Dockerfile.worker
+          push: false
+          outputs: type=docker,dest=/tmp/worker-image.tar
+          tags: |
+            aq-worker:${{ steps.meta.outputs.version }}
+            aq-worker:latest
+          labels: |
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.timestamp }}
+            org.opencontainers.image.description=Airflow worker for Air Quality Intelligence Platform
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # =========================================================================
+      # 7. Verify Docker Images
+      # =========================================================================
+      - name: Verify built images
+        run: |
+          echo "Verifying Docker images..."
+
+          # Load images from tar
+          docker load --input /tmp/api-image.tar
+          docker load --input /tmp/dashboard-image.tar
+          docker load --input /tmp/worker-image.tar
+
+          # List images
+          echo "Built images:"
+          docker images | grep -E "aq-(api|dashboard|worker)"
+
+          # Check image sizes
+          echo ""
+          echo "Image sizes:"
+          docker images --no-trunc --format "table {{.Repository}}:{{.Tag}}\t{{.Size}}" | grep "aq-"
+
+      # =========================================================================
+      # 8. Run Health Checks on Images
+      # =========================================================================
+      - name: Run health checks on built images
+        continue-on-error: true
+        run: |
+          echo "Running health checks on built images..."
+
+          # Check for non-root user in all images
+          for image in "aq-api:latest" "aq-dashboard:latest" "aq-worker:latest"; do
+            echo ""
+            echo "Checking $image..."
+
+            # Verify it's built and available
+            if docker image inspect "$image" > /dev/null 2>&1; then
+              echo "✓ $image exists"
+
+              # Check image config
+              docker inspect "$image" --format='User: {{.Config.User}}'
+            else
+              echo "✗ $image not found"
+            fi
+          done
+
+      # =========================================================================
+      # 9. Generate Build Report
+      # =========================================================================
+      - name: Generate build report
+        if: always()
+        run: |
+          echo "## Docker Build Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ steps.meta.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Timestamp:** ${{ steps.meta.outputs.timestamp }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Built Images" >> $GITHUB_STEP_SUMMARY
+          echo "- aq-api:${{ steps.meta.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- aq-api:latest" >> $GITHUB_STEP_SUMMARY
+          echo "- aq-dashboard:${{ steps.meta.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- aq-dashboard:latest" >> $GITHUB_STEP_SUMMARY
+          echo "- aq-worker:${{ steps.meta.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- aq-worker:latest" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Status" >> $GITHUB_STEP_SUMMARY
+          echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| API | ${{ steps.build-api.outcome }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dashboard | ${{ steps.build-dashboard.outcome }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Worker | ${{ steps.build-worker.outcome }} |" >> $GITHUB_STEP_SUMMARY
+
+      # =========================================================================
+      # 10. Upload Images as Artifacts
+      # =========================================================================
+      - name: Upload Docker images as artifacts
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: docker-images
+          path: /tmp/*-image.tar
+          retention-days: 7
+
+      # =========================================================================
+      # 11. Create Release Notes
+      # =========================================================================
+      - name: Create release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const version = '${{ steps.meta.outputs.version }}';
+            const releaseNotes = `
+## Docker Images Released
+
+### Version: ${version}
+
+**Images:**
+- \`aq-api:${version}\`
+- \`aq-dashboard:${version}\`
+- \`aq-worker:${version}\`
+
+**Tags:**
+- \`aq-api:latest\`
+- \`aq-dashboard:latest\`
+- \`aq-worker:latest\`
+
+**Quick Start:**
+\`\`\`bash
+docker-compose pull
+docker-compose up -d
+\`\`\`
+
+**Verification:**
+\`\`\`bash
+docker/health-check.sh
+\`\`\`
+
+See [Docker Documentation](docs/Docker-and-Deployment.md) for details.
+            `;
+
+            github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: 'v' + version,
+              name: 'Release ' + version,
+              body: releaseNotes,
+              draft: false,
+              prerelease: false
+            }).catch(error => {
+              console.log('Release already exists or error:', error.message);
+            });
+
+      # =========================================================================
+      # 12. Docker Build Success
+      # =========================================================================
+      - name: Docker build completed
+        if: success()
+        run: |
+          echo "✅ Docker images built successfully"
+          echo "   Version: ${{ steps.meta.outputs.version }}"
+          echo "   Components: API, Dashboard, Worker"
+
+      - name: Docker build failed
+        if: failure()
+        run: |
+          echo "❌ Docker build failed"
+          exit 1

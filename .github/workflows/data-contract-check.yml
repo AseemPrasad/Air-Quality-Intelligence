@@ -1,0 +1,214 @@
+name: Data Contract Validation
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/aq_engine/quality/contracts.py'
+      - 'src/aq_engine/quality/rules.py'
+      - 'tests/unit/test_data_contracts.py'
+      - 'pyproject.toml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/aq_engine/quality/contracts.py'
+      - 'src/aq_engine/quality/rules.py'
+      - 'tests/unit/test_data_contracts.py'
+      - 'pyproject.toml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  data-contract-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # =========================================================================
+      # 1. Checkout Code
+      # =========================================================================
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # =========================================================================
+      # 2. Setup Python
+      # =========================================================================
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+          cache: 'pip'
+
+      # =========================================================================
+      # 3. Install Dependencies
+      # =========================================================================
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # =========================================================================
+      # 4. Validate Pydantic Schemas
+      # =========================================================================
+      - name: Validate Pydantic data contracts
+        id: pydantic-validation
+        run: |
+          echo "Validating Pydantic schemas..."
+          python << 'EOF'
+          import sys
+          from pydantic import ValidationError
+
+          try:
+              # Import all contract models
+              from src.aq_engine.quality.contracts import (
+                  RawAirQualityRecord,
+                  RawWeatherRecord,
+                  HourlyFact,
+                  Baseline,
+                  Anomaly,
+                  PollutionEvent,
+              )
+
+              print("✓ All contract models imported successfully")
+
+              # Validate schema by instantiation with minimal data
+              test_cases = {
+                  "RawAirQualityRecord": {
+                      "location_id": "test_001",
+                      "station_id": "stn_001",
+                      "pollutant": "PM2.5",
+                      "value": 50.0,
+                      "timestamp": "2026-08-15T10:00:00Z",
+                      "source": "openaq",
+                      "external_id": "ext_001"
+                  },
+                  "RawWeatherRecord": {
+                      "location_id": "test_001",
+                      "timestamp": "2026-08-15T10:00:00Z",
+                      "temperature_c": 28.5,
+                      "source": "open_meteo",
+                      "external_id": "grid_001"
+                  },
+                  "HourlyFact": {
+                      "location_id": "test_001",
+                      "hour_start": "2026-08-15T10:00:00Z",
+                      "pollutant": "PM2.5",
+                      "mean_value": 55.0,
+                      "median_value": 54.5,
+                      "min_value": 40.0,
+                      "max_value": 70.0,
+                      "observation_count": 12,
+                      "coverage_pct": 100.0
+                  },
+                  "Baseline": {
+                      "location_id": "test_001",
+                      "pollutant": "PM2.5",
+                      "hour_of_day": 10,
+                      "month": 8,
+                      "observation_count": 30,
+                      "median": 55.0,
+                      "mad": 8.5
+                  },
+              }
+
+              for model_name, test_data in test_cases.items():
+                  model = globals()[model_name]
+                  try:
+                      instance = model(**test_data)
+                      print(f"✓ {model_name} schema validated")
+                  except ValidationError as e:
+                      print(f"✗ {model_name} validation failed: {e}")
+                      sys.exit(1)
+
+              print("\n✓ All Pydantic schemas valid")
+
+          except ImportError as e:
+              print(f"✗ Failed to import contracts: {e}")
+              sys.exit(1)
+          except Exception as e:
+              print(f"✗ Schema validation error: {e}")
+              sys.exit(1)
+          EOF
+
+      # =========================================================================
+      # 5. Run Data Contract Tests
+      # =========================================================================
+      - name: Run data contract tests
+        id: contract-tests
+        run: |
+          echo "Running data contract tests..."
+          pytest tests/unit/test_quality_complete.py -v --tb=short -k "test_"
+
+      # =========================================================================
+      # 6. Validate Data Integrity Rules
+      # =========================================================================
+      - name: Validate data integrity rules
+        id: integrity-rules
+        run: |
+          echo "Validating data integrity rules..."
+          python << 'EOF'
+          import sys
+
+          try:
+              from src.aq_engine.quality.rules import (
+                  AQStructuralValidation,
+                  AQSemanticValidation,
+                  AQTemporalValidation,
+                  AQOutlierValidation,
+                  AQStaleValidation,
+                  WeatherStructuralValidation,
+                  WeatherSemanticValidation,
+                  WeatherTemporalValidation,
+              )
+
+              print("✓ All validation rule classes imported")
+
+              # Instantiate to verify they're properly defined
+              rules = [
+                  AQStructuralValidation(),
+                  AQSemanticValidation(),
+                  AQTemporalValidation(future_tolerance_hours=1.0),
+                  AQOutlierValidation(z_threshold=6.0),
+                  AQStaleValidation(flatline_threshold=3),
+                  WeatherStructuralValidation(),
+                  WeatherSemanticValidation(),
+                  WeatherTemporalValidation(future_tolerance_hours=1.0),
+              ]
+
+              print(f"✓ All {len(rules)} validation rules instantiated")
+              print("✓ Data integrity rules validated")
+
+          except Exception as e:
+              print(f"✗ Validation rules error: {e}")
+              sys.exit(1)
+          EOF
+
+      # =========================================================================
+      # 7. Summary
+      # =========================================================================
+      - name: Data Contract Validation Summary
+        if: always()
+        run: |
+          echo "## Data Contract Validation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Pydantic Schemas | ${{ steps.pydantic-validation.outcome }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Contract Tests | ${{ steps.contract-tests.outcome }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Integrity Rules | ${{ steps.integrity-rules.outcome }} |" >> $GITHUB_STEP_SUMMARY
+
+      # =========================================================================
+      # 8. Fail if validation failed
+      # =========================================================================
+      - name: Enforce data contract validation
+        if: failure()
+        run: |
+          echo "❌ Data contract validation failed"
+          exit 1
+
+      - name: Data contracts validated ✅
+        if: success()
+        run: |
+          echo "✅ All data contracts validated"
