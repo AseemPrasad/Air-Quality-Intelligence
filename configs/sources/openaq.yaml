@@ -1,0 +1,65 @@
+# OpenAQ API Configuration
+# Real-time air quality observations from global monitoring networks
+
+openaq:
+  name: "OpenAQ API"
+  source_type: "air_quality"
+
+  # API endpoint configuration
+  base_url: "https://api.openaq.org/v3"
+  timeout_seconds: 30
+
+  # Rate limiting
+  rate_limit_per_minute: 60
+
+  # Retry configuration
+  retry_count: 3
+  retry_delays_seconds: [2, 4, 8]  # Exponential backoff with jitter
+
+  # Transient HTTP status codes (retry on these)
+  transient_status_codes: [429, 500, 502, 503, 504]
+
+  # Location configuration for Kolkata
+  location:
+    city: "Kolkata"
+    country: "India"
+    latitude: 22.5726
+    longitude: 88.3639
+
+    # Geographic bounding box (approximate Kolkata area)
+    bbox:
+      north: 22.65
+      south: 22.45
+      east: 88.5
+      west: 88.2
+
+  # Pollutants to monitor
+  pollutants:
+    - code: "pm25"
+      name: "PM2.5"
+      unit: "µg/m³"
+      priority: 1
+    - code: "pm10"
+      name: "PM10"
+      unit: "µg/m³"
+      priority: 2
+    - code: "no2"
+      name: "Nitrogen Dioxide"
+      unit: "ppb"
+      priority: 3
+    - code: "o3"
+      name: "Ozone"
+      unit: "ppb"
+      priority: 4
+    - code: "so2"
+      name: "Sulfur Dioxide"
+      unit: "ppb"
+      priority: 5
+
+  # Station metadata (populated during ingestion)
+  kolkata_station_ids: []
+
+  # Data availability
+  has_real_time: true
+  has_historical: true
+  historical_depth_days: 2555  # ~7 years

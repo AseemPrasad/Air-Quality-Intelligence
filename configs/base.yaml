@@ -1,0 +1,77 @@
+# Air Quality Intelligence Platform - Base Configuration
+# Environment-agnostic settings; override with environment-specific files
+
+platform:
+  name: "Air Quality Intelligence Platform"
+  version: "0.1.0"
+  environment: "development"  # development, staging, production
+
+data:
+  # Lookback window for late arrivals (hours)
+  lookback_hours: 6
+  # Partition granularity for data storage
+  partition_granularity: "daily"  # daily or hourly
+  # Historical data retention period (days)
+  retention_days: 730
+
+quality:
+  # Semantic bounds for validation
+  humidity_min: 0
+  humidity_max: 100
+  wind_direction_min: 0
+  wind_direction_max: 360
+  # Temporal tolerance for future-dated observations
+  future_date_tolerance_hours: 1
+  # Enable deduplication checking
+  duplicate_check_enabled: true
+  # Flatline detection: flag if value unchanged for N consecutive observations
+  flatline_threshold_count: 5
+
+anomaly:
+  # Robust Z-score thresholds for anomaly severity classification
+  thresholds:
+    normal: 2.0          # z < 2.0
+    elevated: 2.0        # 2.0 <= z < 3.0
+    high: 3.0            # 3.0 <= z < 4.0 (event trigger threshold)
+    severe: 4.0          # 4.0 <= z < 5.0
+    extreme: 5.0         # z >= 5.0
+  # Minimum history required to compute baseline (observations)
+  min_history_observations: 60
+  # Fallback percentile rank when MAD is zero
+  fallback_percentile: 75
+
+pollution_events:
+  # Duration criteria for event detection
+  min_consecutive_high_hours: 3
+  min_high_hours_in_window: 3
+  window_hours: 4
+  # Event merging: merge events separated by <= N hours
+  merge_gap_hours: 1
+
+ml:
+  # Model promotion: candidate must beat current model by >= N% MAE improvement
+  min_promotion_improvement_pct: 5.0
+  # Default forecast horizons (hours) for initial model training
+  default_forecast_horizons: [1, 3, 6]
+  # Train/validation/test split (fractions; must sum to 1.0)
+  train_fraction: 0.6
+  validation_fraction: 0.2
+  test_fraction: 0.2
+  # Random seed for reproducibility
+  random_seed: 42
+
+storage:
+  # Root paths for data layers
+  raw_path: "data/raw"
+  clean_path: "data/clean"
+  marts_path: "data/marts"
+  quarantine_path: "data/quarantine"
+  # Parquet write options
+  parquet_compression: "snappy"
+  parquet_row_group_size: 10000
+
+logging:
+  # Log level for application (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+  level: "INFO"
+  # Include stack traces for exceptions
+  include_traceback: true

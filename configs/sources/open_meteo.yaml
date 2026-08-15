@@ -1,0 +1,85 @@
+# Open-Meteo API Configuration
+# Weather data: temperature, humidity, wind, pressure, precipitation, cloud cover
+
+open_meteo:
+  name: "Open-Meteo API"
+  source_type: "weather"
+
+  # API endpoint configuration
+  base_url: "https://api.open-meteo.com/v1"
+  timeout_seconds: 30
+
+  # No API key required; free service
+  requires_api_key: false
+
+  # Rate limiting (Open-Meteo: 10k requests/day, 2 parallel requests)
+  rate_limit_per_minute: 60
+  max_parallel_requests: 2
+
+  # Retry configuration
+  retry_count: 3
+  retry_delays_seconds: [2, 4, 8]
+
+  # Transient HTTP status codes
+  transient_status_codes: [429, 500, 502, 503, 504]
+
+  # Kolkata geographic bounds
+  location:
+    city: "Kolkata"
+    country: "India"
+    latitude: 22.5726
+    longitude: 88.3639
+
+  # Bounding box for weather data retrieval
+  kolkata_bbox:
+    north: 22.65
+    south: 22.45
+    east: 88.5
+    west: 88.2
+
+  # Weather parameters to fetch
+  weather_params:
+    - code: "temperature_2m"
+      name: "Temperature (2m)"
+      unit: "°C"
+    - code: "relative_humidity_2m"
+      name: "Relative Humidity (2m)"
+      unit: "%"
+    - code: "wind_speed_10m"
+      name: "Wind Speed (10m)"
+      unit: "km/h"
+    - code: "wind_direction_10m"
+      name: "Wind Direction (10m)"
+      unit: "°"
+    - code: "pressure_msl"
+      name: "Pressure (MSL)"
+      unit: "hPa"
+    - code: "precipitation"
+      name: "Precipitation"
+      unit: "mm"
+    - code: "cloud_cover"
+      name: "Cloud Cover"
+      unit: "%"
+
+  # Query options
+  options:
+    # Timezone for returned times
+    timezone: "Asia/Kolkata"
+    # Temperature unit
+    temperature_unit: "celsius"
+    # Wind speed unit
+    windspeed_unit: "kmh"
+    # Precipitation unit
+    precipitation_unit: "mm"
+    # Pressure unit
+    pressure_unit: "hpa"
+
+  # Data availability
+  has_real_time: true
+  has_historical: true
+  has_forecast: true
+  historical_depth_days: 10000  # Extensive historical coverage
+  forecast_depth_days: 16       # 16-day forecast
+
+  # Update frequency
+  update_frequency_minutes: 15  # Weather updates every 15 minutes
