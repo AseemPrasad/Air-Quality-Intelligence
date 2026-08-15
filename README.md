@@ -87,74 +87,148 @@ EXTERNAL SOURCES
 - **Intelligence Plane**: Analytics, anomaly detection, pollution events, baselines and forecasting.
 - **Control Plane**: PostgreSQL metadata, pipeline state, lineage and model registry.
 
-## Quick Start
+## Quick Start (5 Steps)
 
-### Prerequisites
+### 1. Prerequisites
 
-- Docker and Docker Compose
+- Docker & Docker Compose (v20.10+)
 - Python 3.12+
+- 8 GB RAM, 50 GB disk
 - Git
 
-### Launch
+### 2. Clone & Setup
 
 ```bash
-docker-compose up -d
-```
-
-This brings up:
-- **PostgreSQL** (metadata/control plane)
-- **Airflow** (orchestration)
-- **Python** services (ingestion, validation, ML)
-
-### Environment Setup
-
-```bash
-# Clone and navigate to the project
 git clone <repository>
 cd air-quality-intelligence
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -e ".[dev]"
-
-# Verify installation
-aq health
+# Copy environment file
+cat > .env << 'EOF'
+DATABASE_URL=postgresql://aq_user:aq_password@postgres:5432/air_quality
+POSTGRES_USER=aq_user
+POSTGRES_PASSWORD=aq_password
+POSTGRES_DB=air_quality
+API_HOST=0.0.0.0
+API_PORT=8000
+API_LOG_LEVEL=INFO
+DATA_DIR=/data
+PARQUET_PATH=/data/parquet
+OPENAQ_API_KEY=your-key-here
+AIRFLOW__WEBSERVER__SECRET_KEY=change-me-in-production
+EOF
 ```
 
-## CLI Usage
-
-### Core Commands
+### 3. Launch Services
 
 ```bash
-# Ingest data from sources
-aq ingest --source openaq
-aq ingest --source weather
+docker-compose up -d
+sleep 30  # Wait for services to start
 
-# Validate raw data for a specific date
-aq validate --date 2026-08-15
-
-# Compute hourly aggregates
-aq aggregate --date 2026-08-15
-
-# Detect anomalies and pollution events
-aq detect-anomalies --date 2026-08-15
-aq detect-events --date 2026-08-15
-
-# Train forecasting models
-aq train --target pm25_1h
-
-# Generate predictions
-aq predict --horizon 1h
-
-# Backfill historical data
-aq backfill --source openaq --start 2026-01-01 --end 2026-01-07
-
-# Check system health
-aq health
+# Verify
+docker-compose ps
 ```
+
+Services:
+- **PostgreSQL** (port 5432): Metadata, control plane, audit log
+- **API** (port 8000): FastAPI with Pydantic validation
+- **Airflow** (port 8080): Orchestration & DAGs
+
+### 4. Initialize & Test
+
+```bash
+# Initialize database schema
+docker-compose exec api python -m src.aq_engine.init_db
+
+# Test API health
+curl http://localhost:8000/api/system/health
+
+# View Airflow DAGs
+open http://localhost:8080  # admin / admin
+```
+
+### 5. Start Ingestion (Manual Trigger or Scheduled)
+
+```bash
+# Option A: Via Airflow UI (http://localhost:8080)
+# Trigger "aq_hourly_ingest" DAG
+
+# Option B: Via CLI
+docker-compose exec api python -c "
+from src.aq_engine.connectors import OpenAQConnector
+from src.aq_engine.storage import ParquetStorage
+
+storage = ParquetStorage('/data/parquet')
+connector = OpenAQConnector()
+records = connector.fetch()
+storage.write(records)
+"
+
+# Verify data flow
+curl http://localhost:8000/api/locations
+```
+
+**Result:** Hourly ingestion from OpenAQ & Open-Meteo, 1,200 + 450 records/hour
+
+## API Usage Examples
+
+### Get Current Observations
+
+```bash
+curl http://localhost:8000/api/locations/kolkata_001/current
+```
+
+**Response:**
+```json
+{
+  "location_id": "kolkata_001",
+  "pollutants": [{
+    "pollutant": "PM2.5",
+    "value": 65.5,
+    "anomaly_severity": "HIGH",
+    "baseline_median": 55.0
+  }],
+  "weather": {
+    "temperature_c": 32.5,
+    "humidity_pct": 75,
+    "wind_speed_kmh": 12.0
+  }
+}
+```
+
+### Get Forecasts
+
+```bash
+curl "http://localhost:8000/api/locations/kolkata_001/forecast?horizon=1h,3h,6h"
+```
+
+**Response:**
+```json
+{
+  "forecasts": [
+    {
+      "horizon_minutes": 60,
+      "predicted_pm25": 62.0,
+      "lower_bound": 55.0,
+      "upper_bound": 70.0,
+      "confidence": 0.85
+    }
+  ]
+}
+```
+
+### Get Events (Pollution Spikes)
+
+```bash
+curl "http://localhost:8000/api/locations/kolkata_001/events?start_date=2026-08-14T00:00:00Z&end_date=2026-08-15T23:59:59Z"
+```
+
+### System Health
+
+```bash
+curl http://localhost:8000/api/system/health
+```
+
+See [API Specification](docs/05-api-specification.md) for full endpoint documentation.
 
 ## Project Structure
 
@@ -226,20 +300,18 @@ Code is formatted with `black` and linted with `ruff`. All public APIs require t
 
 Comprehensive documentation is in `docs/`:
 
-- `01-product-requirements.md` — Problem, scope, non-functional requirements
-- `02-system-architecture.md` — Design, principles, patterns
-- `03-data-architecture.md` — Storage layout, partitioning strategy
-- `04-data-contracts.md` — Canonical schemas and interfaces
-- `05-database-design.md` — PostgreSQL schema, relationships
-- `06-data-quality.md` — Validation rules, quality classes
-- `07-pipeline-design.md` — Ingestion, orchestration, failure handling
-- `08-analytics-specification.md` — Baselines, aggregation, coverage
-- `09-ml-specification.md` — Features, models, evaluation, promotion
-- `10-api-specification.md` — Endpoints, response schemas
-- `11-dashboard-specification.md` — Pages, visualizations, interactions
-- `12-testing-strategy.md` — Coverage, CI/CD
-- `13-observability.md` — Logging, lineage, monitoring
-- `18-architecture-decisions/` — ADRs for major choices
+### Core References
+- **[01-system-architecture.md](docs/01-system-architecture.md)** — Three-plane architecture, technology stack, data flow, deployment model
+- **[02-data-contracts.md](docs/02-data-contracts.md)** — Canonical schemas (air quality, weather, hourly facts, baselines, quality classifications)
+- **[03-anomaly-detection-logic.md](docs/03-anomaly-detection-logic.md)** — MAD-based z-score, severity thresholds, fallback logic
+- **[04-ml-specification.md](docs/04-ml-specification.md)** — 46 features, time-series splits, baselines, 4 ML candidates, 5% promotion criteria
+- **[05-api-specification.md](docs/05-api-specification.md)** — 8 REST endpoints with JSON examples, error codes, rate limiting, client examples
+- **[06-database-schema.md](docs/06-database-schema.md)** — DDL for 12 PostgreSQL tables, relationships, ER diagram, indexes, partitioning strategy
+- **[07-deployment-guide.md](docs/07-deployment-guide.md)** — Docker Compose quick-start, env vars, K8s deployment, monitoring, troubleshooting
+- **[08-runbook.md](docs/08-runbook.md)** — Manual backfill, model retraining, data recovery, disaster recovery procedures
+- **[09-architecture-decisions/](docs/09-architecture-decisions/)** — ADRs:
+  - `001-postgresql-parquet-choice.md` — Why dual storage (transactional DB + columnar files)
+  - `004-anomaly-detection-mad.md` — Why Median Absolute Deviation (robust to outliers)
 
 ## Milestones
 
