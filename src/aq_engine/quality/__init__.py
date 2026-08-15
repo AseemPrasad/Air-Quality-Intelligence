@@ -1,6 +1,7 @@
 """Quality layer for data validation and storage.
 
-Provides data contracts, hashing, validation rules, and quarantine handling.
+Provides data contracts, hashing, validation rules, quarantine handling,
+deduplication, and late-arrival processing.
 """
 
 from aq_engine.quality.contracts import RawAirQualityRecord, RawWeatherRecord
@@ -17,6 +18,8 @@ from aq_engine.quality.rules import (
     WeatherTemporalValidation,
 )
 from aq_engine.quality.quarantine import QuarantineManager
+from aq_engine.quality.deduplication import Deduplicator
+from aq_engine.quality.late_arrival import LateLookbackProcessor, LateArrivalClassification
 
 __all__ = [
     "RawAirQualityRecord",
@@ -33,4 +36,7 @@ __all__ = [
     "WeatherSemanticValidation",
     "WeatherTemporalValidation",
     "QuarantineManager",
+    "Deduplicator",
+    "LateLookbackProcessor",
+    "LateArrivalClassification",
 ]
