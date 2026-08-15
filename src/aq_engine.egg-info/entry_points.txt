@@ -1,0 +1,2 @@
+[console_scripts]
+aq = aq_engine.cli:app
