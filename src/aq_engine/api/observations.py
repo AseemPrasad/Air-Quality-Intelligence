@@ -103,6 +103,74 @@ class HistoryResponse(BaseModel):
     data: List[HistoricalDataPoint]
 
 
+class ForecastPoint(BaseModel):
+    """Single forecast point."""
+
+    horizon_minutes: int
+    target_time: datetime
+    predicted_pm25: float
+    lower_bound: float
+    upper_bound: float
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    model_version: Optional[str] = None
+
+
+class ForecastResponse(BaseModel):
+    """Forecast response."""
+
+    location_id: str
+    generated_at: datetime
+    forecasts: List[ForecastPoint]
+
+
+class EventWeather(BaseModel):
+    """Weather during event."""
+
+    mean_temperature_c: Optional[float] = None
+    mean_humidity_pct: Optional[float] = None
+    mean_wind_speed_kmh: Optional[float] = None
+
+
+class PollutionEvent(BaseModel):
+    """Pollution event."""
+
+    event_id: str
+    pollutant: str
+    start_time: datetime
+    end_time: datetime
+    duration_hours: int
+    peak_value: float
+    mean_value: float
+    peak_anomaly_score: float
+    severity: str
+    baseline_median: Optional[float] = None
+    weather: Optional[EventWeather] = None
+
+
+class EventsResponse(BaseModel):
+    """Events list response."""
+
+    location_id: str
+    events: List[PollutionEvent]
+
+
+class BaselineResponse(BaseModel):
+    """Baseline statistics response."""
+
+    location_id: str
+    pollutant: str
+    month: int
+    hour_of_day: int
+    observation_count: int
+    median: float
+    mad: float
+    p50: float
+    p75: float
+    p90: float
+    p95: float
+    p99: float
+
+
 # Mock data
 MOCK_LOCATIONS = [
     LocationMetadata(
@@ -331,4 +399,214 @@ async def get_history(
         start_date=start_date,
         end_date=end_date,
         data=data_points,
+    )
+
+
+@router.get(
+    "/locations/{location_id}/forecast",
+    response_model=ForecastResponse,
+    summary="Multi-horizon forecast",
+    description="Get PM2.5 forecasts for multiple horizons",
+)
+async def get_forecast(
+    location_id: str,
+    horizon: str = Query("1h,3h,6h", description="Horizons (1h, 3h, 6h)"),
+) -> ForecastResponse:
+    """Get multi-horizon forecasts for a location.
+
+    Args:
+        location_id: Location identifier
+        horizon: Comma-separated horizons (1h, 3h, 6h)
+
+    Returns:
+        Multi-horizon forecasts with confidence intervals
+
+    Raises:
+        HTTPException: 404 if location not found
+    """
+    # Check location exists
+    location = next(
+        (loc for loc in MOCK_LOCATIONS if loc.location_id == location_id),
+        None,
+    )
+    if not location:
+        logger.warning(f"Location not found: {location_id}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Location {location_id} not found",
+        )
+
+    generated_time = datetime.now(timezone.utc)
+    forecasts = []
+
+    # Parse horizons
+    horizon_map = {"1h": 60, "3h": 180, "6h": 360}
+    for h in horizon.split(","):
+        h = h.strip()
+        if h in horizon_map:
+            minutes = horizon_map[h]
+            target_time = generated_time + timedelta(minutes=minutes)
+
+            # Calculate confidence based on horizon (closer = more confident)
+            confidence = max(0.65, 1.0 - (minutes / 1000))
+
+            forecasts.append(
+                ForecastPoint(
+                    horizon_minutes=minutes,
+                    target_time=target_time,
+                    predicted_pm25=70.0 + (minutes / 100),
+                    lower_bound=60.0 + (minutes / 100),
+                    upper_bound=80.0 + (minutes / 100),
+                    confidence=confidence,
+                    model_version="2026-08-15_hgb",
+                )
+            )
+
+    logger.info(f"Forecast generated for {location_id} with {len(forecasts)} horizons")
+
+    return ForecastResponse(
+        location_id=location_id,
+        generated_at=generated_time,
+        forecasts=forecasts,
+    )
+
+
+@router.get(
+    "/locations/{location_id}/events",
+    response_model=EventsResponse,
+    summary="Pollution events",
+    description="Get historical pollution events",
+)
+async def get_events(
+    location_id: str,
+    start_date: datetime = Query(..., description="Start date (ISO 8601)"),
+    end_date: datetime = Query(..., description="End date (ISO 8601)"),
+    pollutant: str = Query("PM2.5", description="Pollutant name"),
+) -> EventsResponse:
+    """Get pollution events for a location.
+
+    Args:
+        location_id: Location identifier
+        start_date: Start date (ISO 8601)
+        end_date: End date (ISO 8601)
+        pollutant: Pollutant name
+
+    Returns:
+        List of pollution events
+
+    Raises:
+        HTTPException: 404 if location not found
+        HTTPException: 400 if date range invalid
+    """
+    # Check location exists
+    location = next(
+        (loc for loc in MOCK_LOCATIONS if loc.location_id == location_id),
+        None,
+    )
+    if not location:
+        logger.warning(f"Location not found: {location_id}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Location {location_id} not found",
+        )
+
+    # Validate date range
+    if end_date < start_date:
+        logger.warning(f"Invalid date range: {start_date} to {end_date}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="End date must be after start date",
+        )
+
+    # Mock events
+    events = []
+    if start_date <= datetime(2026, 8, 15, tzinfo=timezone.utc) <= end_date:
+        events.append(
+            PollutionEvent(
+                event_id="evt_20260815_001",
+                pollutant=pollutant,
+                start_time=datetime(2026, 8, 14, 22, 0, tzinfo=timezone.utc),
+                end_time=datetime(2026, 8, 15, 6, 0, tzinfo=timezone.utc),
+                duration_hours=8,
+                peak_value=125.3,
+                mean_value=98.5,
+                peak_anomaly_score=4.8,
+                severity="SEVERE",
+                baseline_median=55.0,
+                weather=EventWeather(
+                    mean_temperature_c=28.5,
+                    mean_humidity_pct=82,
+                    mean_wind_speed_kmh=3.5,
+                ),
+            )
+        )
+
+    logger.info(
+        f"Events fetched for {location_id}/{pollutant} "
+        f"({start_date} to {end_date}, {len(events)} events)"
+    )
+
+    return EventsResponse(location_id=location_id, events=events)
+
+
+@router.get(
+    "/locations/{location_id}/baseline",
+    response_model=BaselineResponse,
+    summary="Baseline statistics",
+    description="Get historical baseline for current hour and month",
+)
+async def get_baseline(
+    location_id: str,
+    pollutant: str = Query("PM2.5", description="Pollutant name"),
+    hour: Optional[int] = Query(None, ge=0, le=23, description="Hour (0-23), default=current"),
+    month: Optional[int] = Query(None, ge=1, le=12, description="Month (1-12), default=current"),
+) -> BaselineResponse:
+    """Get baseline statistics for a location.
+
+    Args:
+        location_id: Location identifier
+        pollutant: Pollutant name
+        hour: Hour of day (default: current hour)
+        month: Month (default: current month)
+
+    Returns:
+        Baseline statistics
+
+    Raises:
+        HTTPException: 404 if location not found
+    """
+    # Check location exists
+    location = next(
+        (loc for loc in MOCK_LOCATIONS if loc.location_id == location_id),
+        None,
+    )
+    if not location:
+        logger.warning(f"Location not found: {location_id}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Location {location_id} not found",
+        )
+
+    now = datetime.now(timezone.utc)
+    hour = hour or now.hour
+    month = month or now.month
+
+    logger.info(
+        f"Baseline fetched for {location_id}/{pollutant} "
+        f"(month={month}, hour={hour})"
+    )
+
+    return BaselineResponse(
+        location_id=location_id,
+        pollutant=pollutant,
+        month=month,
+        hour_of_day=hour,
+        observation_count=62,
+        median=55.0,
+        mad=8.5,
+        p50=55.0,
+        p75=62.1,
+        p90=71.3,
+        p95=78.5,
+        p99=92.1,
     )
