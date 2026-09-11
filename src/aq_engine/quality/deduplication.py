@@ -164,12 +164,25 @@ class Deduplicator:
     def _get_existing_aq_keys(self, partition_date: date) -> Set[str]:
         """Get existing measurement keys from air quality partition.
 
+        Reads ``source``, ``station_id``, ``sensor_id``, ``pollutant``, and
+        ``observed_at`` columns from every Parquet file in the partition and
+        recomputes the SHA-256 measurement key for each row.  This mirrors
+        exactly what :meth:`deduplicate_air_quality` computes for incoming
+        records, so the two sets are directly comparable.
+
+        ``measurement_key`` is not stored in the Parquet schema
+        (``RawAirQualityRecord`` does not include it), hence the
+        recomputation approach.
+
         Args:
             partition_date: Target partition date.
 
         Returns:
-            Set of existing measurement keys.
+            Set of existing measurement keys.  Empty if the partition does
+            not exist, contains no Parquet files, or a read error occurs.
         """
+        import polars as pl
+
         partition_path = (
             self.storage_root
             / "openaq"
@@ -182,18 +195,30 @@ class Deduplicator:
             logger.debug(f"Partition {partition_path} does not exist (first write)")
             return set()
 
-        # Try to read existing parquet files
         try:
-            # List all parquet files in partition
             parquet_files = list(partition_path.glob("*.parquet"))
             if not parquet_files:
                 return set()
 
-            # Read and extract keys
-            # Note: This would typically use polars to read the parquet files
-            # For now, return empty set (full implementation would read actual data)
-            keys = set()
-            logger.debug(f"Read {len(keys)} keys from {len(parquet_files)} parquet files")
+            key_cols = ["source", "station_id", "sensor_id", "pollutant", "observed_at"]
+            keys: Set[str] = set()
+
+            for parquet_file in parquet_files:
+                df = pl.read_parquet(str(parquet_file), columns=key_cols)
+                for row in df.iter_rows(named=True):
+                    key = generate_measurement_key(
+                        source=row["source"],
+                        station_id=row["station_id"],
+                        sensor_id=row["sensor_id"],
+                        pollutant=row["pollutant"],
+                        observed_at=row["observed_at"],
+                    )
+                    keys.add(key)
+
+            logger.debug(
+                f"Loaded {len(keys)} existing AQ keys from "
+                f"{len(parquet_files)} parquet files in {partition_path}"
+            )
             return keys
 
         except Exception as e:
@@ -203,12 +228,20 @@ class Deduplicator:
     def _get_existing_weather_keys(self, partition_date: date) -> Set[str]:
         """Get existing weather keys from weather partition.
 
+        Reads ``source``, ``location_id``, and ``observed_at`` columns from
+        every Parquet file in the partition and recomputes the SHA-256 weather
+        key for each row.  Mirrors what :meth:`deduplicate_weather` computes
+        for incoming records.
+
         Args:
             partition_date: Target partition date.
 
         Returns:
-            Set of existing weather keys.
+            Set of existing weather keys.  Empty if the partition does not
+            exist, contains no Parquet files, or a read error occurs.
         """
+        import polars as pl
+
         partition_path = (
             self.storage_root
             / "weather"
@@ -226,8 +259,23 @@ class Deduplicator:
             if not parquet_files:
                 return set()
 
-            keys = set()
-            logger.debug(f"Read {len(keys)} keys from {len(parquet_files)} parquet files")
+            key_cols = ["source", "location_id", "observed_at"]
+            keys: Set[str] = set()
+
+            for parquet_file in parquet_files:
+                df = pl.read_parquet(str(parquet_file), columns=key_cols)
+                for row in df.iter_rows(named=True):
+                    key = generate_weather_key(
+                        source=row["source"],
+                        location_id=row["location_id"],
+                        observed_at=row["observed_at"],
+                    )
+                    keys.add(key)
+
+            logger.debug(
+                f"Loaded {len(keys)} existing weather keys from "
+                f"{len(parquet_files)} parquet files in {partition_path}"
+            )
             return keys
 
         except Exception as e:
