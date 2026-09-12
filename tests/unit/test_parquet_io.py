@@ -3,17 +3,17 @@
 Tests atomic writes, partition structure, roundtrip read/write, and large batch operations.
 """
 
-import pytest
 import shutil
 import tempfile
 from datetime import date, datetime, timezone
 from pathlib import Path
 
 import polars as pl
-
-from aq_engine.storage.parquet_io import ParquetWriter
-from aq_engine.quality.hashing import generate_measurement_key, generate_weather_key
+import pytest
 from aq_engine.common import StorageError
+from aq_engine.common.time import date_partition_path
+from aq_engine.quality.hashing import generate_measurement_key, generate_weather_key
+from aq_engine.storage.parquet_io import ParquetWriter
 
 
 @pytest.fixture
@@ -462,3 +462,133 @@ class TestMeasurementKey:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestDatePartitionPath:
+    """Regression tests for date_partition_path() accepting both date and datetime.
+
+    Verifies the fix for the bug where passing a plain ``date`` object raised
+    ``TypeError`` because the original implementation passed every input through
+    ``ensure_utc()``, which only accepts ``datetime`` objects.
+    """
+
+    # ------------------------------------------------------------------
+    # Plain date inputs (the previously broken path)
+    # ------------------------------------------------------------------
+
+    def test_date_object_returns_correct_path(self):
+        """date object produces correct partition path without raising TypeError."""
+        result = date_partition_path(date(2026, 8, 15))
+        assert result == "year=2026/month=08/day=15"
+
+    def test_date_object_zero_pads_month(self):
+        """Single-digit month is zero-padded."""
+        result = date_partition_path(date(2026, 3, 5))
+        assert result == "year=2026/month=03/day=05"
+
+    def test_date_object_zero_pads_day(self):
+        """Single-digit day is zero-padded."""
+        result = date_partition_path(date(2026, 11, 7))
+        assert result == "year=2026/month=11/day=07"
+
+    def test_date_object_first_day_of_year(self):
+        """date object for January 1st is handled correctly."""
+        result = date_partition_path(date(2026, 1, 1))
+        assert result == "year=2026/month=01/day=01"
+
+    def test_date_object_last_day_of_year(self):
+        """date object for December 31st is handled correctly."""
+        result = date_partition_path(date(2026, 12, 31))
+        assert result == "year=2026/month=12/day=31"
+
+    # ------------------------------------------------------------------
+    # datetime inputs (existing behaviour must be preserved)
+    # ------------------------------------------------------------------
+
+    def test_naive_datetime_returns_correct_path(self):
+        """Naive datetime (assumed UTC) produces correct partition path."""
+        result = date_partition_path(datetime(2026, 8, 15, 12, 30, 0))
+        assert result == "year=2026/month=08/day=15"
+
+    def test_aware_utc_datetime_returns_correct_path(self):
+        """UTC-aware datetime produces correct partition path."""
+        result = date_partition_path(datetime(2026, 8, 15, 23, 59, 59, tzinfo=timezone.utc))
+        assert result == "year=2026/month=08/day=15"
+
+    def test_aware_datetime_midnight_utc(self):
+        """Midnight UTC datetime produces correct partition path."""
+        result = date_partition_path(datetime(2026, 8, 15, 0, 0, 0, tzinfo=timezone.utc))
+        assert result == "year=2026/month=08/day=15"
+
+    # ------------------------------------------------------------------
+    # Consistency: date and matching datetime must produce the same path
+    # ------------------------------------------------------------------
+
+    def test_date_and_datetime_produce_same_path(self):
+        """date(Y, M, D) and datetime(Y, M, D, tzinfo=utc) yield identical paths."""
+        d = date(2026, 8, 15)
+        dt = datetime(2026, 8, 15, 0, 0, 0, tzinfo=timezone.utc)
+        assert date_partition_path(d) == date_partition_path(dt)
+
+    # ------------------------------------------------------------------
+    # ParquetWriter integration: write_* must not raise when called with date
+    # ------------------------------------------------------------------
+
+    def test_write_air_quality_with_date_partition(self, tmp_path):
+        """write_air_quality_raw() accepts a plain date without crashing."""
+        writer = ParquetWriter(root_path=str(tmp_path))
+        records = [
+            {
+                "source": "openaq",
+                "station_id": "123",
+                "sensor_id": "456",
+                "pollutant": "pm25",
+                "value": 45.5,
+                "unit": "µg/m³",
+                "observed_at": datetime(2026, 8, 15, 12, 0, 0, tzinfo=timezone.utc),
+                "ingested_at": datetime(2026, 8, 15, 12, 5, 0, tzinfo=timezone.utc),
+                "raw_payload_hash": "abc123",
+            }
+        ]
+        # This call previously raised TypeError when date_partition_path received
+        # the plain date object passed by _write_partition.
+        path = writer.write_air_quality_raw(records, date(2026, 8, 15))
+        assert path is not None
+        assert path.exists()
+
+    def test_write_weather_with_date_partition(self, tmp_path):
+        """write_weather_raw() accepts a plain date without crashing."""
+        writer = ParquetWriter(root_path=str(tmp_path))
+        records = [
+            {
+                "source": "open_meteo",
+                "location_id": "123",
+                "observed_at": datetime(2026, 8, 15, 12, 0, 0, tzinfo=timezone.utc),
+                "temperature_c": 28.5,
+                "humidity_pct": 65.0,
+                "wind_speed_kmh": 8.5,
+                "wind_direction_deg": 180.0,
+                "pressure_hpa": 1013.0,
+                "precipitation_mm": 0.1,
+                "cloud_cover_pct": 40.0,
+                "ingested_at": datetime(2026, 8, 15, 12, 5, 0, tzinfo=timezone.utc),
+                "raw_payload_hash": "xyz789",
+            }
+        ]
+        path = writer.write_weather_raw(records, date(2026, 8, 15))
+        assert path is not None
+        assert path.exists()
+
+    # ------------------------------------------------------------------
+    # TypeError for invalid input (existing safety behaviour)
+    # ------------------------------------------------------------------
+
+    def test_invalid_type_raises_type_error(self):
+        """Passing a string raises TypeError."""
+        with pytest.raises(TypeError, match="Expected datetime or date"):
+            date_partition_path("2026-08-15")  # type: ignore[arg-type]
+
+    def test_invalid_int_raises_type_error(self):
+        """Passing an int raises TypeError."""
+        with pytest.raises(TypeError, match="Expected datetime or date"):
+            date_partition_path(20260815)  # type: ignore[arg-type]
