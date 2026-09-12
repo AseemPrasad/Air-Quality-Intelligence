@@ -660,19 +660,19 @@ class FeatureEngineer:
 
     @staticmethod
     def _calculate_std(values: List[float]) -> Optional[float]:
-        """Calculate standard deviation.
+        """Calculate sample standard deviation (ddof=1).
 
         Args:
             values: List of numeric values
 
         Returns:
-            Std dev or None if empty
+            Sample std dev or None if fewer than 2 values
         """
         if not values or len(values) < 2:
             return None
 
         mean = sum(values) / len(values)
-        variance = sum((x - mean) ** 2 for x in values) / len(values)
+        variance = sum((x - mean) ** 2 for x in values) / (len(values) - 1)
         return math.sqrt(variance)
 
     @staticmethod

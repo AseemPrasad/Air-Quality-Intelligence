@@ -934,5 +934,81 @@ class TestEdgeCases:
         assert features["horizon_minutes"] == 10080
 
 
+class TestCalculateStd:
+    """Regression tests for FeatureEngineer._calculate_std.
+
+    Prior to the fix, _calculate_std used population variance (ddof=0,
+    divides by N) instead of sample variance (ddof=1, divides by N-1).
+    This caused every rolling-std feature to be systematically under-estimated
+    for small window sizes, diverging from the values scikit-learn and numpy
+    produce by default (both use ddof=1 for sample std in their pipelines).
+    """
+
+    # ------------------------------------------------------------------
+    # Bug reproduction — these failed before the fix
+    # ------------------------------------------------------------------
+
+    def test_two_values_sample_std(self):
+        """Population std and sample std diverge most at N=2.
+
+        population std([10, 20]) = 5.0
+        sample     std([10, 20]) = 7.071...
+        """
+        result = FeatureEngineer._calculate_std([10.0, 20.0])
+        expected = math.sqrt(((10.0 - 15.0) ** 2 + (20.0 - 15.0) ** 2) / 1)
+        assert result == pytest.approx(expected, rel=1e-9), (
+            f"_calculate_std([10, 20]) returned {result}; "
+            f"expected sample std {expected:.6f} (not population std 5.0)"
+        )
+
+    def test_three_values_sample_std(self):
+        """Verify N=3 case uses N-1 = 2 denominator."""
+        values = [10.0, 20.0, 30.0]
+        result = FeatureEngineer._calculate_std(values)
+        mean = 20.0
+        expected = math.sqrt(((10 - mean) ** 2 + (20 - mean) ** 2 + (30 - mean) ** 2) / 2)
+        assert result == pytest.approx(expected, rel=1e-9)
+
+    def test_six_values_sample_std(self):
+        """Reproduce the 6-hour rolling window case used in production."""
+        # Mirrors values produced by hourly_pm25_facts fixture: 51–56
+        values = [51.0, 52.0, 53.0, 54.0, 55.0, 56.0]
+        result = FeatureEngineer._calculate_std(values)
+
+        mean = sum(values) / len(values)
+        expected = math.sqrt(sum((x - mean) ** 2 for x in values) / (len(values) - 1))
+
+        assert result == pytest.approx(expected, rel=1e-9), (
+            f"6-hour std is wrong: got {result}, expected sample std {expected:.6f}"
+        )
+
+    # ------------------------------------------------------------------
+    # Edge cases that must preserve existing behaviour
+    # ------------------------------------------------------------------
+
+    def test_empty_list_returns_none(self):
+        """Empty input returns None — unchanged."""
+        assert FeatureEngineer._calculate_std([]) is None
+
+    def test_single_value_returns_none(self):
+        """Single value returns None (sample std undefined for N=1) — unchanged."""
+        assert FeatureEngineer._calculate_std([42.0]) is None
+
+    def test_constant_values_returns_zero(self):
+        """All-equal values → std = 0 for both ddof=0 and ddof=1."""
+        assert FeatureEngineer._calculate_std([5.0, 5.0, 5.0, 5.0]) == pytest.approx(0.0)
+
+    def test_returns_float_not_none_for_valid_input(self):
+        """Valid two-plus-value input always returns a float, never None."""
+        result = FeatureEngineer._calculate_std([1.0, 2.0, 3.0])
+        assert result is not None
+        assert isinstance(result, float)
+
+    def test_result_always_non_negative(self):
+        """Std dev must be non-negative."""
+        for values in [[1.0, 100.0], [0.0, 0.001], [50.0, 51.0, 52.0]]:
+            assert FeatureEngineer._calculate_std(values) >= 0.0
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
