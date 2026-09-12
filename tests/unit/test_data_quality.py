@@ -314,5 +314,78 @@ class TestEdgeCases:
         assert quality_class in [QualityValidator.VALID, QualityValidator.SUSPICIOUS]
 
 
+class TestAirQualityOutlierThreshold:
+    """Regression tests for AQOutlierValidation.z_threshold.
+
+    Prior to the fix, self.z_threshold was stored but never used.
+    validate() applied hardcoded absolute bounds regardless of the configured
+    threshold, making the parameter silently non-functional.
+
+    These tests verify that z_threshold now controls the effective bound
+    proportionally: bound = BASE_BOUND * (z_threshold / 6.0).
+    """
+
+    def test_high_threshold_suppresses_outlier_warning(self):
+        """A very high z_threshold must suppress a warning that default fires.
+
+        This test FAILED against upstream/main (threshold was ignored).
+        """
+        rule = AQOutlierValidation(z_threshold=999.0)
+        record = {"value": 501.0, "pollutant": "pm25", "unit": "µg/m³"}
+        valid, warnings = rule.validate(record)
+        assert valid is True
+        assert len(warnings) == 0, (
+            f"z_threshold=999 should suppress outlier for value=501, got: {warnings}"
+        )
+
+    def test_low_threshold_flags_value_default_would_pass(self):
+        """A tight z_threshold must flag a value that default (6.0) would not warn on."""
+        # At z_threshold=3.0: effective pm25 bound = 500 * (3/6) = 250
+        rule = AQOutlierValidation(z_threshold=3.0)
+        record = {"value": 251.0, "pollutant": "pm25", "unit": "µg/m³"}
+        valid, warnings = rule.validate(record)
+        assert valid is True  # still not hard-invalid
+        assert len(warnings) > 0, (
+            "z_threshold=3.0 should flag value=251 (effective bound=250)"
+        )
+
+    def test_default_threshold_behavior_unchanged(self):
+        """z_threshold=6.0 (default) must preserve the original behavior."""
+        rule = AQOutlierValidation(z_threshold=6.0)
+
+        # Above the 500 bound: must warn
+        _, warnings_above = rule.validate({"value": 501.0, "pollutant": "pm25", "unit": "µg/m³"})
+        assert len(warnings_above) > 0
+
+        # Below the 500 bound: must not warn
+        _, warnings_below = rule.validate({"value": 499.0, "pollutant": "pm25", "unit": "µg/m³"})
+        assert len(warnings_below) == 0
+
+    def test_different_thresholds_produce_different_results(self):
+        """Two different thresholds must not produce identical output for a boundary value."""
+        record = {"value": 300.0, "pollutant": "pm25", "unit": "µg/m³"}
+
+        # z_threshold=3.0 → bound=250 → 300 > 250 → warns
+        _, w_tight = AQOutlierValidation(z_threshold=3.0).validate(record)
+        # z_threshold=6.0 → bound=500 → 300 < 500 → no warning
+        _, w_default = AQOutlierValidation(z_threshold=6.0).validate(record)
+
+        assert len(w_tight) > 0
+        assert len(w_default) == 0
+
+    def test_unknown_pollutant_never_warns_regardless_of_threshold(self):
+        """Records with an unknown pollutant must never trigger outlier warnings."""
+        for threshold in [1.0, 6.0, 999.0]:
+            rule = AQOutlierValidation(z_threshold=threshold)
+            _, warnings = rule.validate({"value": 99999.0, "pollutant": "unknown_gas"})
+            assert len(warnings) == 0, f"threshold={threshold} should not warn for unknown pollutant"
+
+    def test_none_value_no_warning_regardless_of_threshold(self):
+        """None value must never produce a warning."""
+        rule = AQOutlierValidation(z_threshold=0.01)
+        _, warnings = rule.validate({"value": None, "pollutant": "pm25"})
+        assert len(warnings) == 0
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

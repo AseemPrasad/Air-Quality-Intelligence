@@ -173,11 +173,17 @@ class AQOutlierValidation(ValidationRule):
     def validate(self, record: dict) -> Tuple[bool, List[str]]:
         """Validate for outliers.
 
-        Extreme outliers (z > 6) are flagged as suspicious but not invalid.
+        Flags values that exceed the pollutant's absolute bound scaled by
+        ``z_threshold``.  The reference bound is calibrated at the default
+        threshold of 6.0, so a lower threshold tightens the effective limit
+        and a higher threshold relaxes it.  This keeps the check proportional
+        to the configured sensitivity without requiring historical statistics.
+
+        Extreme outliers are flagged as suspicious (warning) but not invalid.
 
         Example:
             >>> rule = AQOutlierValidation(z_threshold=6)
-            >>> valid, warnings = rule.validate({"value": 10000})
+            >>> valid, warnings = rule.validate({"value": 10000, "pollutant": "pm25"})
             >>> assert valid
             >>> assert len(warnings) > 0
         """
@@ -187,20 +193,21 @@ class AQOutlierValidation(ValidationRule):
         if value is None or not isinstance(value, (int, float)):
             return True, warnings
 
-        # Very rough outlier check: if value is extremely high
-        # (more sophisticated: would use historical median + MAD)
         pollutant = record.get("pollutant", "").lower()
 
-        # Reasonable upper bounds for pollutants
-        bounds = {
-            "pm25": 500.0,  # µg/m³
+        # Reference upper bounds calibrated at z_threshold=6.0 (µg/m³ or ppb)
+        base_bounds = {
+            "pm25": 500.0,
             "pm10": 800.0,
-            "no2": 200.0,  # ppb typically
+            "no2": 200.0,
             "o3": 200.0,
         }
+        base_threshold = 6.0
 
-        if pollutant in bounds and value > bounds[pollutant]:
-            warnings.append(f"Extreme outlier: {value} {record.get('unit')}")
+        if pollutant in base_bounds:
+            effective_bound = base_bounds[pollutant] * (self.z_threshold / base_threshold)
+            if value > effective_bound:
+                warnings.append(f"Extreme outlier: {value} {record.get('unit')}")
 
         return True, warnings
 
