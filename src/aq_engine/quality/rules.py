@@ -160,7 +160,15 @@ class AQTemporalValidation(ValidationRule):
 
 
 class AQOutlierValidation(ValidationRule):
-    """Detect extreme outliers using z-score."""
+    """Detect extreme pollutant values using configurable absolute bounds.
+
+    Flags observations that exceed a pollutant-specific upper bound.  The
+    configured ``z_threshold`` proportionally scales that bound relative to
+    the default of 6.0, making the check tighter (lower threshold) or looser
+    (higher threshold) without requiring historical mean or standard-deviation
+    data.  This rule is a lightweight ingestion pre-filter, not a statistical
+    z-score detector.
+    """
 
     def __init__(self, z_threshold: float = 6.0):
         """Initialize with z-score threshold.
