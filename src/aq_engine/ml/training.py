@@ -1,7 +1,10 @@
 """ML model training pipeline."""
 
+import importlib.metadata
+import json
 import logging
 import pickle
+import sys
 from datetime import datetime, timezone
 from typing import Dict, Tuple, Any, Optional
 import numpy as np
@@ -126,20 +129,51 @@ class ModelTrainer:
 
     @staticmethod
     def save_model(model_dict: Dict, version: str, output_dir: str = "models") -> str:
-        """Save trained model to disk.
+        """Save trained model to disk with a JSON metadata sidecar.
+
+        Writes two files:
+        - ``{version}.pkl``: pickled model dict (unchanged serialization format).
+        - ``{version}_metadata.json``: human-readable artifact metadata recording the
+          Python version, scikit-learn version, model class, and artifact format
+          identifier so that compatibility can be checked before loading.
 
         Args:
-            model_dict: Trained model dict
-            version: Version string (e.g., "2026-08-15_linear")
-            output_dir: Output directory
+            model_dict: Trained model dict (as returned by :meth:`train_model`).
+            version: Version string (e.g., ``"2026-08-15_linear"``).
+            output_dir: Output directory.
 
         Returns:
-            Path to saved model
+            Path to saved model pickle file.
         """
         output_path = Path(output_dir) / f"{version}.pkl"
         with open(output_path, "wb") as f:
             pickle.dump(model_dict, f)
+
+        # Resolve sklearn version safely — falls back to "unknown" if not installed
+        try:
+            sklearn_version = importlib.metadata.version("scikit-learn")
+        except importlib.metadata.PackageNotFoundError:
+            sklearn_version = "unknown"
+
+        metadata = {
+            "artifact_format_version": "1",
+            "model_version": version,
+            "model_type": model_dict.get("model_type"),
+            "model_class": type(model_dict.get("model")).__name__,
+            "target_horizon": model_dict.get("target_horizon"),
+            "created_at": model_dict.get("created_at"),
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+            "python_version": sys.version,
+            "sklearn_version": sklearn_version,
+            "feature_cols": model_dict.get("feature_cols", []),
+        }
+
+        metadata_path = Path(output_dir) / f"{version}_metadata.json"
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2)
+
         logger.info(f"Model saved to {output_path}")
+        logger.info(f"Model metadata saved to {metadata_path}")
         return str(output_path)
 
     @staticmethod
