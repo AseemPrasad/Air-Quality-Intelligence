@@ -42,11 +42,7 @@ deduplicated as (
     -- Ensure timezone awareness
     cast(observed_at as timestamp with time zone) as observed_at_utc,
     cast(ingested_at as timestamp with time zone) as ingested_at_utc,
-    raw_payload_hash,
-    row_number() over (
-      partition by source, station_id, sensor_id, pollutant, observed_at
-      order by ingested_at desc
-    ) as duplicate_rank
+    raw_payload_hash
   from raw_data
   where rn = 1  -- Keep only latest version if multiple updates
 )
@@ -63,4 +59,3 @@ select
   raw_payload_hash,
   cast(current_timestamp as timestamp with time zone) as processed_at
 from deduplicated
-where duplicate_rank = 1
