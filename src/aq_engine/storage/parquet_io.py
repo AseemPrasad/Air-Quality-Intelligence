@@ -4,8 +4,10 @@ Provides atomic, partitioned writes and reads for air quality and weather data.
 """
 
 import logging
+import os
 import tempfile
 from datetime import date, datetime
+from uuid import uuid4
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -229,12 +231,15 @@ class ParquetWriter:
         storage_dir.mkdir(parents=True, exist_ok=True)
 
         # Final output path
-        final_path = storage_dir / f"records_{datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
+        # Generate a unique final filename for concurrent writers
+        file_id = uuid4().hex
+        final_path = storage_dir / f"records_{file_id}.parquet"
 
         try:
-            # Write to temporary file first
+            # Write to a temporary file that readers cannot discover
             with tempfile.NamedTemporaryFile(
-                suffix=".parquet",
+                prefix=f".records_{file_id}_",
+                suffix=".parquet.tmp",
                 dir=storage_dir,
                 delete=False,
             ) as tmp_file:
@@ -248,7 +253,7 @@ class ParquetWriter:
             )
 
             # Atomic rename
-            tmp_path.rename(final_path)
+            os.replace(tmp_path, final_path)
 
             logger.info(
                 f"Wrote {num_records} {source} records to {final_path.relative_to(self.root_path)}"
