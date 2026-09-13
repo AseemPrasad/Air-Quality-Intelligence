@@ -84,7 +84,14 @@ class TestAirQualityStructural:
         rule = AQStructuralValidation()
         valid, warnings = rule.validate(valid_aq_record)
         assert valid is False
-
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_value_fails(self, valid_aq_record, value):
+        """Test non-finite pollutant values fail structural validation."""
+        valid_aq_record["value"] = value
+        rule = AQStructuralValidation()
+        valid, warnings = rule.validate(valid_aq_record)
+        assert valid is False
+        assert "finite" in warnings[0].lower()
 
 class TestAirQualitySemantic:
     """Test semantic validation for air quality."""
@@ -182,6 +189,17 @@ class TestWeatherStructural:
         valid, warnings = rule.validate(valid_weather_record)
         assert valid is False
 
+    @pytest.mark.parametrize("field", ["temperature_c", "humidity_pct"])
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_required_values_fail(
+        self, valid_weather_record, field, value
+    ):
+        """Test non-finite required weather values fail."""
+        valid_weather_record[field] = value
+        rule = WeatherStructuralValidation()
+        valid, warnings = rule.validate(valid_weather_record)
+        assert valid is False
+        assert "finite" in warnings[0].lower()
 
 class TestWeatherSemantic:
     """Test semantic validation for weather."""
@@ -221,6 +239,25 @@ class TestWeatherSemantic:
         valid, warnings = rule.validate(valid_weather_record)
         assert valid is False
 
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "wind_direction_deg",
+            "wind_speed_kmh",
+            "pressure_hpa",
+            "precipitation_mm",
+        ],
+    )
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_optional_values_fail(
+        self, valid_weather_record, field, value
+    ):
+        """Test non-finite optional weather values fail."""
+        valid_weather_record[field] = value
+        rule = WeatherSemanticValidation()
+        valid, warnings = rule.validate(valid_weather_record)
+        assert valid is False
+        assert "finite" in warnings[0].lower()
 
 class TestQualityValidator:
     """Test quality validator and classification."""

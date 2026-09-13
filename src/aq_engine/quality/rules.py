@@ -82,9 +82,12 @@ class AQStructuralValidation(ValidationRule):
             if record[field] is None:
                 return False, [f"Null required field: {field}"]
 
-        # Check types
+        # Check types and reject non-finite values
         if not isinstance(record["value"], (int, float)):
             return False, ["Value must be numeric"]
+
+        if not math.isfinite(record["value"]):
+            return False, ["Value must be finite"]
 
         if not isinstance(record["observed_at"], datetime):
             return False, ["observed_at must be datetime"]
@@ -270,10 +273,13 @@ class WeatherStructuralValidation(ValidationRule):
         # Check numeric types
         if not isinstance(record.get("temperature_c"), (int, float)):
             return False, ["temperature_c must be numeric"]
+        if not math.isfinite(record["temperature_c"]):
+            return False, ["temperature_c must be finite"]
 
         if not isinstance(record.get("humidity_pct"), (int, float)):
             return False, ["humidity_pct must be numeric"]
-
+        if not math.isfinite(record["humidity_pct"]):
+            return False, ["humidity_pct must be finite"]
         return True, warnings
 
 
@@ -299,24 +305,32 @@ class WeatherSemanticValidation(ValidationRule):
         # Wind direction must be 0-360°
         wind_dir = record.get("wind_direction_deg")
         if wind_dir is not None:
+            if isinstance(wind_dir, (int, float)) and not math.isfinite(wind_dir):
+                return False, ["Wind direction must be finite"]
             if not (0 <= wind_dir <= 360):
                 return False, [f"Wind direction out of range: {wind_dir}°"]
 
         # Wind speed must be non-negative
         wind_speed = record.get("wind_speed_kmh")
         if wind_speed is not None:
+            if isinstance(wind_speed, (int, float)) and not math.isfinite(wind_speed):
+                return False, ["Wind speed must be finite"]
             if wind_speed < 0:
                 return False, ["Wind speed must be non-negative"]
 
         # Pressure must be reasonable
         pressure = record.get("pressure_hpa")
         if pressure is not None:
+            if isinstance(pressure, (int, float)) and not math.isfinite(pressure):
+                return False, ["Pressure must be finite"]
             if not (900 <= pressure <= 1100):
                 return False, [f"Pressure out of range: {pressure} hPa"]
 
         # Precipitation must be non-negative
         precipitation = record.get("precipitation_mm")
         if precipitation is not None:
+            if isinstance(precipitation, (int, float)) and not math.isfinite(precipitation):
+                return False, ["Precipitation must be finite"]
             if precipitation < 0:
                 return False, ["Precipitation must be non-negative"]
 
