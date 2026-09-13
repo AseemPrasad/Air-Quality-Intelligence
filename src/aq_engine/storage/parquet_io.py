@@ -5,11 +5,14 @@ Provides atomic, partitioned writes and reads for air quality and weather data.
 
 import logging
 import os
+import contextlib
+import time
 import tempfile
 from datetime import date, datetime
 from uuid import uuid4
 from pathlib import Path
 from typing import List, Optional, Tuple
+
 
 import polars as pl
 
@@ -19,7 +22,55 @@ from aq_engine.quality.contracts import RawAirQualityRecord, RawWeatherRecord
 
 logger = logging.getLogger(__name__)
 
+@contextlib.contextmanager
+def _partition_lock(lock_path: Path, timeout: float = 30.0):
+    """Acquire an exclusive lock for a Parquet partition."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
 
+    with open(lock_path, "a+b") as lock_file:
+        lock_file.seek(0, 2)
+        if lock_file.tell() == 0:
+            lock_file.write(b"0")
+            lock_file.flush()
+
+        start = time.monotonic()
+
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(
+                        lock_file.fileno(),
+                        fcntl.LOCK_EX | fcntl.LOCK_NB,
+                    )
+
+                break
+
+            except (BlockingIOError, OSError):
+                if time.monotonic() - start >= timeout:
+                    raise TimeoutError(
+                        f"Timed out acquiring partition lock: {lock_path}"
+                    )
+                time.sleep(0.05)
+
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                import msvcrt
+
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 class ParquetWriter:
     """Atomic writer for Parquet-partitioned data.
 
@@ -234,36 +285,39 @@ class ParquetWriter:
         # Generate a unique final filename for concurrent writers
         file_id = uuid4().hex
         final_path = storage_dir / f"records_{file_id}.parquet"
-
+        lock_path = storage_dir / ".partition.lock"
+        tmp_path = None
         try:
-            # Write to a temporary file that readers cannot discover
-            with tempfile.NamedTemporaryFile(
-                prefix=f".records_{file_id}_",
-                suffix=".parquet.tmp",
-                dir=storage_dir,
-                delete=False,
-            ) as tmp_file:
-                tmp_path = Path(tmp_file.name)
+            with _partition_lock(lock_path):
+                # Write to a temporary file that readers cannot discover
+                with tempfile.NamedTemporaryFile(
+                    prefix=f".records_{file_id}_",
+                    suffix=".parquet.tmp",
+                    dir=storage_dir,
+                    delete=False,
+                ) as tmp_file:
+                    tmp_path = Path(tmp_file.name)
 
-            # Write Parquet
-            df.write_parquet(
-                str(tmp_path),
-                compression="snappy",
-                row_group_size=128 * 1024 * 1024,  # 128 MB row groups
-            )
+                # Write Parquet
+                df.write_parquet(
+                    str(tmp_path),
+                    compression="snappy",
+                    row_group_size=128 * 1024 * 1024,
+                )
 
-            # Atomic rename
-            os.replace(tmp_path, final_path)
+                # Atomic rename
+                os.replace(tmp_path, final_path)
 
-            logger.info(
-                f"Wrote {num_records} {source} records to {final_path.relative_to(self.root_path)}"
-            )
+                logger.info(
+                    f"Wrote {num_records} {source} records to "
+                    f"{final_path.relative_to(self.root_path)}"
+                )
 
-            return final_path
+                return final_path
 
         except Exception as e:
             # Clean up temp file if it exists
-            if tmp_path.exists():
+            if tmp_path and tmp_path.exists():
                 tmp_path.unlink()
 
             raise StorageError(
