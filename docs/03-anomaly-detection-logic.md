@@ -152,22 +152,17 @@ Deviations: [0, 0, 0, 0, 0, 0, ..., 0]
 MAD:        0 ← Can't divide by zero!
 ```
 
-### Percentile Rank Fallback
+### Zero-MAD Handling
 
-When MAD = 0, use percentile-based classification:
+When MAD = 0, the historical observations have no measurable spread, so a conventional robust Z-score cannot be calculated.
 
-```python
-percentile_rank = (count of observations <= current) / total
+The historical median is treated as the fixed baseline:
 
-if percentile_rank >= 0.95:
-    severity = "EXTREME"     # Top 5%
-elif percentile_rank >= 0.90:
-    severity = "HIGH"        # Top 10%
-elif percentile_rank >= 0.75:
-    severity = "LOW"         # Top 25%
-else:
-    severity = "NORMAL"      # Bottom 75%
-```
+if baseline_mad == 0:
+    if observed_value != baseline_median:
+        robust_z = 5.0
+    else:
+        robust_z = 0.0
 
 **Example:**
 

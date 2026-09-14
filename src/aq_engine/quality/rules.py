@@ -82,9 +82,12 @@ class AQStructuralValidation(ValidationRule):
             if record[field] is None:
                 return False, [f"Null required field: {field}"]
 
-        # Check types
+        # Check types and reject non-finite values
         if not isinstance(record["value"], (int, float)):
             return False, ["Value must be numeric"]
+
+        if not math.isfinite(record["value"]):
+            return False, ["Value must be finite"]
 
         if not isinstance(record["observed_at"], datetime):
             return False, ["observed_at must be datetime"]
@@ -160,7 +163,15 @@ class AQTemporalValidation(ValidationRule):
 
 
 class AQOutlierValidation(ValidationRule):
-    """Detect extreme outliers using z-score."""
+    """Detect extreme pollutant values using configurable absolute bounds.
+
+    Flags observations that exceed a pollutant-specific upper bound.  The
+    configured ``z_threshold`` proportionally scales that bound relative to
+    the default of 6.0, making the check tighter (lower threshold) or looser
+    (higher threshold) without requiring historical mean or standard-deviation
+    data.  This rule is a lightweight ingestion pre-filter, not a statistical
+    z-score detector.
+    """
 
     def __init__(self, z_threshold: float = 6.0):
         """Initialize with z-score threshold.
@@ -173,11 +184,17 @@ class AQOutlierValidation(ValidationRule):
     def validate(self, record: dict) -> Tuple[bool, List[str]]:
         """Validate for outliers.
 
-        Extreme outliers (z > 6) are flagged as suspicious but not invalid.
+        Flags values that exceed the pollutant's absolute bound scaled by
+        ``z_threshold``.  The reference bound is calibrated at the default
+        threshold of 6.0, so a lower threshold tightens the effective limit
+        and a higher threshold relaxes it.  This keeps the check proportional
+        to the configured sensitivity without requiring historical statistics.
+
+        Extreme outliers are flagged as suspicious (warning) but not invalid.
 
         Example:
             >>> rule = AQOutlierValidation(z_threshold=6)
-            >>> valid, warnings = rule.validate({"value": 10000})
+            >>> valid, warnings = rule.validate({"value": 10000, "pollutant": "pm25"})
             >>> assert valid
             >>> assert len(warnings) > 0
         """
@@ -187,20 +204,21 @@ class AQOutlierValidation(ValidationRule):
         if value is None or not isinstance(value, (int, float)):
             return True, warnings
 
-        # Very rough outlier check: if value is extremely high
-        # (more sophisticated: would use historical median + MAD)
         pollutant = record.get("pollutant", "").lower()
 
-        # Reasonable upper bounds for pollutants
-        bounds = {
-            "pm25": 500.0,  # µg/m³
+        # Reference upper bounds calibrated at z_threshold=6.0 (µg/m³ or ppb)
+        base_bounds = {
+            "pm25": 500.0,
             "pm10": 800.0,
-            "no2": 200.0,  # ppb typically
+            "no2": 200.0,
             "o3": 200.0,
         }
+        base_threshold = 6.0
 
-        if pollutant in bounds and value > bounds[pollutant]:
-            warnings.append(f"Extreme outlier: {value} {record.get('unit')}")
+        if pollutant in base_bounds:
+            effective_bound = base_bounds[pollutant] * (self.z_threshold / base_threshold)
+            if value > effective_bound:
+                warnings.append(f"Extreme outlier: {value} {record.get('unit')}")
 
         return True, warnings
 
@@ -270,10 +288,13 @@ class WeatherStructuralValidation(ValidationRule):
         # Check numeric types
         if not isinstance(record.get("temperature_c"), (int, float)):
             return False, ["temperature_c must be numeric"]
+        if not math.isfinite(record["temperature_c"]):
+            return False, ["temperature_c must be finite"]
 
         if not isinstance(record.get("humidity_pct"), (int, float)):
             return False, ["humidity_pct must be numeric"]
-
+        if not math.isfinite(record["humidity_pct"]):
+            return False, ["humidity_pct must be finite"]
         return True, warnings
 
 
@@ -299,24 +320,32 @@ class WeatherSemanticValidation(ValidationRule):
         # Wind direction must be 0-360°
         wind_dir = record.get("wind_direction_deg")
         if wind_dir is not None:
+            if isinstance(wind_dir, (int, float)) and not math.isfinite(wind_dir):
+                return False, ["Wind direction must be finite"]
             if not (0 <= wind_dir <= 360):
                 return False, [f"Wind direction out of range: {wind_dir}°"]
 
         # Wind speed must be non-negative
         wind_speed = record.get("wind_speed_kmh")
         if wind_speed is not None:
+            if isinstance(wind_speed, (int, float)) and not math.isfinite(wind_speed):
+                return False, ["Wind speed must be finite"]
             if wind_speed < 0:
                 return False, ["Wind speed must be non-negative"]
 
         # Pressure must be reasonable
         pressure = record.get("pressure_hpa")
         if pressure is not None:
+            if isinstance(pressure, (int, float)) and not math.isfinite(pressure):
+                return False, ["Pressure must be finite"]
             if not (900 <= pressure <= 1100):
                 return False, [f"Pressure out of range: {pressure} hPa"]
 
         # Precipitation must be non-negative
         precipitation = record.get("precipitation_mm")
         if precipitation is not None:
+            if isinstance(precipitation, (int, float)) and not math.isfinite(precipitation):
+                return False, ["Precipitation must be finite"]
             if precipitation < 0:
                 return False, ["Precipitation must be non-negative"]
 

@@ -44,6 +44,19 @@ hourly_aggregation as (
   group by 1, 2, 3, 4
 ),
 
+-- Deduplicate station dimension to prevent fan-out on LEFT JOIN
+dim_station_deduped as (
+  select
+    station_id,
+    source,
+    location_id,
+    row_number() over (
+      partition by station_id, source
+      order by updated_at desc
+    ) as rn
+  from {{ ref('dim_station') }}
+),
+
 -- Map station to location (mock join for now)
 with_location_mapping as (
   select
@@ -60,9 +73,10 @@ with_location_mapping as (
     hourly_agg.stddev_value,
     hourly_agg.non_zero_count
   from hourly_aggregation as hourly_agg
-  left join {{ ref('dim_station') }} as dim_station
+  left join dim_station_deduped as dim_station
     on hourly_agg.station_id = dim_station.station_id
     and hourly_agg.source = dim_station.source
+    and dim_station.rn = 1
 ),
 
 -- Join with baselines for comparison
