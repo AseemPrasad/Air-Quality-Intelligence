@@ -33,7 +33,7 @@ class AnomalyDetector:
     Formula: robust_z = (x - median) / (1.4826 * MAD)
 
     Edge cases:
-    - MAD = 0 (constant history): Use percentile rank fallback
+    - MAD = 0 (constant history): Flag deviations from the baseline median
     - Missing baseline: Use city-wide median or 7-day recent median
 
     Example:
@@ -84,7 +84,7 @@ class AnomalyDetector:
             Dict with:
             - location_id, pollutant, hour_start
             - observed_value, baseline_median, baseline_mad
-            - robust_z (z-score or percentile rank)
+            - robust_z (robust z-score or zero-MAD deviation score)
             - severity (NORMAL, ELEVATED, HIGH, SEVERE, EXTREME)
             - fallback_used (bool), fallback_reason (str)
             - detected_at (timestamp)
@@ -197,16 +197,19 @@ class AnomalyDetector:
             Tuple of (robust_z, severity_string)
         """
         if baseline_mad == 0:
-            # Constant historical data: use percentile fallback
+            # Constant historical data: use percentile-based fallback
             robust_z = self._calculate_percentile_rank_as_zscore(
                 observed_value, baseline_median
             )
+
             logger.debug(
-                f"MAD is zero (constant history); using percentile rank as z-score: {robust_z:.2f}"
+                f"MAD is zero (constant history); using fallback z-score: {robust_z:.2f}"
             )
         else:
             # Normal robust Z-score
-            robust_z = (observed_value - baseline_median) / (self.MAD_CONSTANT * baseline_mad)
+            robust_z = (observed_value - baseline_median) / (
+                self.MAD_CONSTANT * baseline_mad
+            )
 
         # Take absolute value for severity classification
         abs_z = abs(robust_z)
@@ -246,11 +249,12 @@ class AnomalyDetector:
         # E.g., if value is 2x the median, flag as anomalous.
 
         if baseline_median == 0:
-            # Special case: if median is 0, use absolute difference
-            if abs(observed_value) > 100:  # Arbitrary threshold
-                return 5.0  # EXTREME
-            else:
-                return 0.0  # NORMAL
+            # With a zero baseline, any non-zero value is a deviation.
+            if observed_value == 0:
+                return 0.0
+            if abs(observed_value) > 100:
+                return 5.0
+            return 3.0 if observed_value > 0 else -3.0
         else:
             ratio = observed_value / baseline_median
             if ratio >= 2.0 or ratio <= 0.5:
