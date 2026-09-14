@@ -25,6 +25,7 @@ from aq_engine.connectors.open_meteo import OpenMeteoConnector
 from aq_engine.connectors.models import ConnectorConfig
 from aq_engine.quality.contracts import RawAirQualityRecord, RawWeatherRecord
 from aq_engine.quality.hashing import generate_measurement_key, generate_weather_key
+from aq_engine.quality.deduplication import Deduplicator
 from aq_engine.storage.parquet_io import ParquetWriter
 from aq_engine.storage.db import Database, IngestionRunRepository, LocationRepository, StationRepository
 
@@ -67,6 +68,7 @@ class IngestionOrchestrator:
 
         # Initialize storage and database
         self.parquet_writer = ParquetWriter(root_path=storage_root)
+        self.deduplicator = Deduplicator(storage_root=storage_root)
         self.db = Database(db_url, echo=False)
 
         # Initialize repositories
@@ -166,11 +168,24 @@ class IngestionOrchestrator:
 
                 # Write to Parquet
                 if deduplicated:
-                    partition_date = query_end.date()
-                    self._write_records(source_name, deduplicated, partition_date)
+                    records_by_date = {}
+
+                    for record in deduplicated:
+                        partition_date = ensure_utc(record["observed_at"]).date()
+                        records_by_date.setdefault(partition_date, []).append(record)
+
+                    for partition_date, partition_records in records_by_date.items():
+                        self._write_records(
+                            source_name,
+                            partition_records,
+                            partition_date,
+                        )
+
                     stats["records_written"] = len(deduplicated)
                 else:
-                    logger.warning(f"No records to write for {source_name} after deduplication")
+                    logger.warning(
+                        f"No records to write for {source_name} after deduplication"
+                    )
 
                 # Record to PostgreSQL
                 self.ingestion_repo.record_run(
@@ -463,21 +478,11 @@ class IngestionOrchestrator:
             ) from e
 
     def _deduplicate(self, source_name: str, records: List[Dict]) -> List[Dict]:
-        """Deduplicate records using measurement keys.
-
-        Reads existing Parquet data for current date, checks for duplicates.
-
-        Args:
-            source_name: Source identifier.
-            records: Parsed records.
-
-        Returns:
-            Deduplicated records.
-        """
+        """Deduplicate records against both the current batch and persisted data."""
         if not records:
             return records
 
-        # Generate measurement keys
+        # First deduplicate within the incoming batch.
         keys_to_records = {}
         for record in records:
             if source_name == "openaq":
@@ -488,7 +493,7 @@ class IngestionOrchestrator:
                     pollutant=record["pollutant"],
                     observed_at=record["observed_at"],
                 )
-            else:  # open_meteo
+            else:
                 key = generate_weather_key(
                     source=record["source"],
                     location_id=record["location_id"],
@@ -497,14 +502,46 @@ class IngestionOrchestrator:
 
             keys_to_records[key] = record
 
-        # TODO: Check Parquet for existing keys
-        # For now, just deduplicate within this batch
-        deduplicated = list(keys_to_records.values())
+        batch_unique = list(keys_to_records.values())
+        batch_duplicates = len(records) - len(batch_unique)
 
-        if len(deduplicated) < len(records):
+        # Check persisted Parquet data using each record's actual date partition.
+        records_by_date = {}
+        for record in batch_unique:
+            partition_date = ensure_utc(record["observed_at"]).date()
+            records_by_date.setdefault(partition_date, []).append(record)
+
+        deduplicated = []
+
+        for partition_date, partition_records in records_by_date.items():
+            if source_name == "openaq":
+                unique_records, persisted_duplicates = (
+                    self.deduplicator.deduplicate_air_quality(
+                        partition_records, partition_date
+                    )
+                )
+            else:
+                unique_records, persisted_duplicates = (
+                    self.deduplicator.deduplicate_weather(
+                        partition_records, partition_date
+                    )
+                )
+
+            deduplicated.extend(unique_records)
+
+            if persisted_duplicates:
+                logger.info(
+                    f"Deduplication removed {len(persisted_duplicates)} "
+                    f"records already present in Parquet for {partition_date}"
+                )
+
+        total_duplicates = batch_duplicates + (
+            len(batch_unique) - len(deduplicated)
+        )
+
+        if total_duplicates:
             logger.info(
-                f"Deduplication removed {len(records) - len(deduplicated)} "
-                f"duplicate records"
+                f"Deduplication removed {total_duplicates} duplicate records"
             )
 
         return deduplicated

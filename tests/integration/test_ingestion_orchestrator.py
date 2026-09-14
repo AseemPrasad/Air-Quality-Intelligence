@@ -216,8 +216,8 @@ class TestIngestionWorkflow:
         mock_connector.parse.return_value = [record]
 
         stats2 = orchestrator.ingest_source("openaq")
-        assert stats2["records_written"] == 1  # Same record deduplicated
-
+        assert stats2["records_written"] == 0  # Persisted record is skipped
+        assert stats2["records_rejected"] == 1
 
 class TestFailureRecovery:
     """Test failure handling and recovery."""
