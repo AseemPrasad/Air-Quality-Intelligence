@@ -14,6 +14,7 @@ from aq_engine.common import StorageError
 from aq_engine.common.time import date_partition_path
 from aq_engine.quality.hashing import generate_measurement_key, generate_weather_key
 from aq_engine.storage.parquet_io import ParquetWriter
+from concurrent.futures import ThreadPoolExecutor
 
 
 @pytest.fixture
@@ -156,8 +157,49 @@ class TestWriteAirQuality:
         )
         assert expected_dir.exists()
         assert len(list(expected_dir.glob("*.parquet"))) > 0
+    def test_concurrent_writes_to_same_partition_are_serialized(
+        self, writer, sample_air_quality_records
+    ):
+        """Concurrent writers to one partition must not corrupt or lose records."""
+        partition_date = date(2026, 8, 15)
+        writer_count = 10
 
+        def write_batch(index):
+            records = [
+                {
+                    **record,
+                    "station_id": f"station-{index}",
+                    "sensor_id": f"sensor-{index}",
+                    "raw_payload_hash": (
+                        f"concurrent-{index}-{record['raw_payload_hash']}"
+                    ),
+                }
+                for record in sample_air_quality_records
+            ]
+            return writer.write_air_quality_raw(records, partition_date)
 
+        with ThreadPoolExecutor(max_workers=writer_count) as executor:
+            paths = list(executor.map(write_batch, range(writer_count)))
+
+        assert len(paths) == writer_count
+        assert len(set(paths)) == writer_count
+        assert all(path.exists() for path in paths)
+
+        partition_dir = (
+            writer.root_path
+            / "openaq"
+            / "year=2026"
+            / "month=08"
+            / "day=15"
+        )
+
+        assert not list(partition_dir.glob("*.parquet.tmp"))
+
+        result = writer.read_raw_air_quality(
+            (partition_date, partition_date)
+        )
+
+        assert len(result) == writer_count * len(sample_air_quality_records)
 class TestWriteWeather:
     """Test weather writes."""
 
