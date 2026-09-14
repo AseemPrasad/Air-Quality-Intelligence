@@ -11,6 +11,7 @@ This DAG processes historical data in date ranges for backfill scenarios:
 """
 
 import json
+import gc
 import logging
 from datetime import datetime, timedelta, date
 from typing import Any, Dict, List, Tuple
@@ -93,69 +94,104 @@ def validate_date_range(**context: Any) -> Dict[str, Any]:
     return result
 
 
-def process_date_range(**context: Any) -> Dict[str, Any]:
-    """Process all dates in range with error handling."""
-    params = context["params"]
-    start_date_str = params.get("start_date", "")
-    end_date_str = params.get("end_date", "")
-    task_instance = context["task_instance"]
+def process_date_range(**context):
+    """
+    Process the requested backfill range one day at a time.
 
-    log_data = {
-        "timestamp": datetime.utcnow().isoformat(),
-        "task": "process_date_range",
-        "status": "running",
-    }
+    The DAG deliberately does not build a large in-memory collection
+    containing the complete historical payload.
 
-    logger.info(f"Starting date range processing: {json.dumps(log_data)}")
+    Each date is processed independently and garbage collection is
+    triggered before moving to the next date.
+    """
 
-    # Parse dates
-    start = datetime.strptime(start_date_str, "%Y-%m-%d").date()
-    end = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+    params = context.get("params", {})
 
-    # Track results
-    processed_dates = []
-    failed_dates = []
-    date_errors = {}
+    start_date_str = params.get("start_date")
+    end_date_str = params.get("end_date")
+
+    if not start_date_str or not end_date_str:
+        raise ValueError(
+            "Both start_date and end_date are required"
+        )
+
+    start = datetime.fromisoformat(start_date_str).date()
+    end = datetime.fromisoformat(end_date_str).date()
+
+    if start > end:
+        raise ValueError(
+            f"Invalid date range: {start} > {end}"
+        )
+
+    processed_count = 0
+    failed_count = 0
+    failure_summary = []
 
     current = start
+
     while current <= end:
+
         date_str = current.isoformat()
 
         try:
-            # Simulate processing for this date
-            # In production, would call actual data processing functions
-            _process_single_date(date_str)
-            processed_dates.append(date_str)
-
             logger.info(
-                f"Successfully processed date {date_str}: "
-                f"{json.dumps({'records_processed': 1600})}"
+                f"Processing backfill date: {date_str}"
             )
 
-        except Exception as e:
-            failed_dates.append(date_str)
-            date_errors[date_str] = str(e)
-            logger.warning(f"Failed to process {date_str}: {e}")
+            # ---------------------------------------------------------
+            # IMPORTANT
+            # ---------------------------------------------------------
+            # Keep the actual processing for ONE DATE only inside this
+            # function. It must finish writing/persisting the day's
+            # data before returning.
+            #
+            # Do not fetch the complete start_date -> end_date range
+            # here.
+            # ---------------------------------------------------------
+            _process_single_date(date_str)
+
+            processed_count += 1
+
+            logger.info(
+                f"Successfully processed {date_str}"
+            )
+
+        except Exception as exc:
+            failed_count += 1
+
+            logger.exception(
+                f"Failed to process {date_str}"
+            )
+
+            # Keep only a bounded failure summary instead of retaining
+            # an unlimited error dictionary in XCom.
+            if len(failure_summary) < 100:
+                failure_summary.append(
+                    {
+                        "date": date_str,
+                        "error": str(exc),
+                    }
+                )
+
+        finally:
+            # Release temporary objects created during this day's work.
+            gc.collect()
 
         current += timedelta(days=1)
 
     result = {
-        "dates_processed": len(processed_dates),
-        "dates_failed": len(failed_dates),
-        "processed_dates": processed_dates,
-        "failed_dates": failed_dates,
-        "date_errors": date_errors,
-        "total_records_processed": len(processed_dates) * 1600,
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+        "days_processed": processed_count,
+        "days_failed": failed_count,
+        "failure_summary": failure_summary,
     }
 
-    log_data.update(result)
-    logger.info(f"Date range processing complete: {json.dumps(log_data)}")
-
-    # Push to XCom for summary
-    task_instance.xcom_push(key="backfill_results", value=result)
+    logger.info(
+        f"Backfill date range completed: {result}"
+    )
 
     return result
-
 
 def _process_single_date(date_str: str) -> None:
     """Process a single date (idempotent)."""
