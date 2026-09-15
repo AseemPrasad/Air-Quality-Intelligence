@@ -16,6 +16,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     String,
+    UniqueConstraint,
     create_engine,
     func,
     event,
@@ -130,7 +131,7 @@ class Station(Base):
     sensors = relationship("Sensor", back_populates="station", cascade="all, delete-orphan")
 
     __table_args__ = (
-        ("unique", "source_id", "source_station_id"),  # Unique per source
+        UniqueConstraint("source_id", "source_station_id"),  # Unique per source
     )
 
     def __repr__(self) -> str:
@@ -161,7 +162,7 @@ class Sensor(Base):
     station = relationship("Station", back_populates="sensors")
 
     __table_args__ = (
-        ("unique", "station_id", "source_sensor_id", "pollutant_code"),
+        UniqueConstraint("station_id", "source_sensor_id", "pollutant_code"),
     )
 
     def __repr__(self) -> str:
@@ -276,7 +277,7 @@ class ModelVersion(Base):
     predictions = relationship("Prediction", back_populates="model_version")
 
     __table_args__ = (
-        ("unique", "model_id", "version"),
+        UniqueConstraint("model_id", "version"),
     )
 
     def __repr__(self) -> str:
