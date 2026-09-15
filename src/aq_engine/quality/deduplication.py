@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import List, Tuple, Set, Dict, Any
 
 from aq_engine.quality.hashing import generate_measurement_key, generate_weather_key
-from aq_engine.storage.parquet_io import ParquetWriter
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +33,8 @@ class Deduplicator:
         Args:
             storage_root: Root path for raw data storage.
         """
+        from aq_engine.storage.parquet_io import ParquetWriter
+
         self.storage_root = Path(storage_root)
         self.writer = ParquetWriter(root_path=storage_root)
 
