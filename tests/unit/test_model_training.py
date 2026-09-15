@@ -78,6 +78,21 @@ class TestModelTrainer:
         assert metrics["mae"] > 0
         assert metrics["rmse"] > 0
 
+    def test_target_column_is_not_used_as_a_feature(self, trainer, sample_data):
+        """The value being predicted must not leak into the model inputs."""
+        train_df, val_df = sample_data
+
+        model_dict, _ = trainer.train_model(
+            target_horizon=60,
+            train_df=train_df,
+            val_df=val_df,
+            model_type="linear",
+            target_col="pm25_lag_1h",
+        )
+
+        assert "pm25_lag_1h" not in model_dict["feature_cols"]
+        assert "pm25_lag_2h" in model_dict["feature_cols"]
+
     def test_train_random_forest_model(self, trainer, sample_data):
         """Test training random forest model."""
         train_df, val_df = sample_data
