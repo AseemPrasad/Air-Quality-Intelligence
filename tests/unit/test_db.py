@@ -8,7 +8,7 @@ import pytest
 from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 
-from sqlalchemy import create_engine
+from sqlalchemy import UniqueConstraint, create_engine
 from sqlalchemy.orm import sessionmaker
 
 from aq_engine.storage.db import (
@@ -72,6 +72,28 @@ class TestDatabaseConnection:
             # Verify at least one table exists by querying
             result = session.query(Source).first()
             assert result is None  # Empty table is OK
+
+
+class TestDatabaseConstraints:
+    """Test persistence invariants declared by ORM models."""
+
+    @pytest.mark.parametrize(
+        ("model", "column_names"),
+        [
+            (Station, {"source_id", "source_station_id"}),
+            (Sensor, {"station_id", "source_sensor_id", "pollutant_code"}),
+            (ModelVersion, {"model_id", "version"}),
+        ],
+    )
+    def test_composite_unique_constraints(self, model, column_names):
+        """Composite identities must be represented by SQLAlchemy constraints."""
+        unique_columns = {
+            frozenset(column.name for column in constraint.columns)
+            for constraint in model.__table__.constraints
+            if isinstance(constraint, UniqueConstraint)
+        }
+
+        assert frozenset(column_names) in unique_columns
 
 
 class TestSourceModel:
