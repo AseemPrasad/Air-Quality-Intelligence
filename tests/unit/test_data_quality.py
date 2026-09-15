@@ -331,6 +331,16 @@ class TestBatchValidation:
         assert captured_record["value"] == -5.0
         assert len(reasons) > 0
 
+    def test_batch_validation_rejects_invalid_source_type(self, valid_aq_record):
+        """Test batch validation rejects unsupported source types."""
+        validator = QualityValidator()
+
+        with pytest.raises(ValueError, match="Unsupported source_type"):
+            validator.validate_batch(
+                [valid_aq_record],
+                source_type="invalid",
+            )
+
 
 class TestEdgeCases:
     """Test edge cases."""
