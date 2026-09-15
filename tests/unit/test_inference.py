@@ -173,6 +173,31 @@ class TestPredictionMetadata:
         ids = [p["prediction_id"] for p in predictions]
         assert len(ids) == len(set(ids))
 
+    def test_preserves_persisted_model_version_id(self):
+        """Persisted database identifiers take precedence over compatibility IDs."""
+        assert PredictionEngine._get_model_version_id(
+            {"model_version_id": "314159"}
+        ) == 314159
+
+    def test_legacy_model_version_id_is_deterministic(self):
+        """Legacy artifacts receive a stable ID independent of Python hash salt."""
+        model_dict = {
+            "created_at": "2026-09-15T00:00:00+00:00",
+            "feature_cols": ["pm25_lag_1h", "temperature_c"],
+            "model_type": "linear",
+            "target_horizon": 60,
+        }
+
+        assert PredictionEngine._get_model_version_id(model_dict) == 5770051153445276357
+
+    def test_missing_model_metadata_still_has_stable_fallback(self):
+        """Partially populated legacy artifacts do not fall back to salted hash()."""
+        first = PredictionEngine._get_model_version_id({})
+        second = PredictionEngine._get_model_version_id({})
+
+        assert first == second
+        assert 0 <= first <= (1 << 63) - 1
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
