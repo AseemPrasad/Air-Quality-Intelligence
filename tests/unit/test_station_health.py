@@ -382,6 +382,19 @@ class TestHealthSummary:
         # Median (5 items): 60
         assert summary["median_health_score"] == 60.0
 
+    def test_summary_median_averages_middle_scores_for_even_count(self, scorer):
+        """Test median averages the middle two scores for an even station count."""
+        health_scores = [
+            {"health_score": 100.0, "status": "healthy"},
+            {"health_score": 80.0, "status": "healthy"},
+            {"health_score": 60.0, "status": "degraded"},
+            {"health_score": 20.0, "status": "offline"},
+        ]
+
+        summary = scorer.get_health_summary(health_scores)
+
+        assert summary["median_health_score"] == 70.0
+
     def test_summary_empty_list(self, scorer):
         """Test summary with empty list."""
         summary = scorer.get_health_summary([])

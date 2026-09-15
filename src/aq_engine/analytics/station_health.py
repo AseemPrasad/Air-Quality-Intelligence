@@ -349,11 +349,11 @@ class StationHealthScorer:
 
         mean_score = sum(scores) / len(scores) if scores else None
         sorted_scores = sorted(scores)
-        median_score = (
-            sorted_scores[len(sorted_scores) // 2]
-            if sorted_scores
-            else None
-        )
+        midpoint = len(sorted_scores) // 2
+        if len(sorted_scores) % 2:
+            median_score = sorted_scores[midpoint]
+        else:
+            median_score = (sorted_scores[midpoint - 1] + sorted_scores[midpoint]) / 2
 
         return {
             "total_stations": len(health_scores),
