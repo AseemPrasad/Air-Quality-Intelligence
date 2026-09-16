@@ -1,5 +1,7 @@
 """Inference engine for multi-horizon PM2.5 predictions."""
 
+import hashlib
+import json
 import logging
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -166,7 +168,7 @@ class PredictionEngine:
 
         return {
             "prediction_id": str(uuid.uuid4()),
-            "model_version_id": hash(str(self.model_dict.get("created_at"))) % (10**9),
+            "model_version_id": self._get_model_version_id(self.model_dict),
             "location_id": location_id,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "target_time": target_time.isoformat(),
@@ -177,6 +179,51 @@ class PredictionEngine:
             "confidence": confidence,
             "model_type": self.model_dict.get("model_type"),
         }
+
+    @staticmethod
+    def _get_model_version_id(model_dict: Dict[str, Any]) -> int:
+        """Return a stable identifier for the model that produced a prediction.
+
+        New artifacts may persist the database identifier directly. Older artifacts
+        need a compatibility identifier, but Python's built-in ``hash`` cannot be
+        used because string hashes are randomized for every interpreter process.
+        """
+        persisted_id = model_dict.get("model_version_id")
+        if persisted_id is not None and not isinstance(persisted_id, bool):
+            try:
+                parsed_id = int(persisted_id)
+            except (TypeError, ValueError):
+                pass
+            else:
+                if parsed_id >= 0:
+                    return parsed_id
+
+        model = model_dict.get("model")
+        scaler = model_dict.get("scaler")
+        identity = {
+            "created_at": model_dict.get("created_at"),
+            "feature_cols": model_dict.get("feature_cols", []),
+            "model_class": (
+                f"{type(model).__module__}.{type(model).__qualname__}"
+                if model is not None
+                else None
+            ),
+            "model_type": model_dict.get("model_type"),
+            "scaler_class": (
+                f"{type(scaler).__module__}.{type(scaler).__qualname__}"
+                if scaler is not None
+                else None
+            ),
+            "target_horizon": model_dict.get("target_horizon"),
+        }
+        payload = json.dumps(
+            identity, sort_keys=True, separators=(",", ":"), default=str
+        ).encode("utf-8")
+
+        # Keep the deterministic digest within a signed BIGINT for database use.
+        return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") & (
+            (1 << 63) - 1
+        )
 
     def _predict_with_baseline(
         self,
