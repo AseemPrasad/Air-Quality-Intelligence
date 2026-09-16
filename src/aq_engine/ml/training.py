@@ -58,7 +58,24 @@ class ModelTrainer:
         )
 
         # Prepare data
-        feature_cols = [col for col in train_df.columns if col.startswith(("pm25_", "temp_", "humidity_", "wind_", "hour_", "day_", "month_", "season_", "is_"))]
+        feature_cols = [
+            col
+            for col in train_df.columns
+            if col != target_col
+            and col.startswith(
+                (
+                    "pm25_",
+                    "temp_",
+                    "humidity_",
+                    "wind_",
+                    "hour_",
+                    "day_",
+                    "month_",
+                    "season_",
+                    "is_",
+                )
+            )
+        ]
         
         X_train = train_df.select(feature_cols).to_numpy()
         y_train = train_df[target_col].to_numpy()
