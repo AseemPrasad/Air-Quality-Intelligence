@@ -136,7 +136,7 @@ class TestQuarantineInvalidRecords:
         quarantine_manager.quarantine_invalid_records("openaq", [], record_type="air_quality")
 
         quarantine_files = list(
-            (quarantine_manager.quarantine_root / "openaq").glob("*/*/**.jsonl")
+            (quarantine_manager.quarantine_root / "openaq").glob("**/*.jsonl")
         )
         assert len(quarantine_files) == 0
 
