@@ -18,8 +18,11 @@ logger = logging.getLogger(__name__)
 class QuarantineManager:
     """Manages quarantine storage for invalid/suspicious records."""
 
-    def __init__(self, quarantine_root: str = "data/quarantine"):
+    def __init__(self, quarantine_root: str = "data/parquet/quarantine"):
         """Initialize quarantine manager.
+
+        The default location matches the lakehouse quarantine boundary used before
+        analytical marts are populated.
 
         Args:
             quarantine_root: Root path for quarantine storage.
