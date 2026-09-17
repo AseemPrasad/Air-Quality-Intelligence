@@ -208,6 +208,20 @@ class TestFetchWeather:
         # Should have data from second location only
         assert response.body["meta"]["total"] == 1
 
+    def test_fetch_all_locations_failure_raises_error(self, connector_with_locations):
+        """Test that failure of all locations raises IngestionFailed."""
+        fail_response = Mock()
+        fail_response.status_code = 404
+        fail_response.raise_for_status.side_effect = Exception("404 Not Found")
+        connector_with_locations._session.get = Mock(return_value=fail_response)
+        with pytest.raises(
+            IngestionFailed,
+            match="No weather data fetched from any location",
+        ):
+            connector_with_locations.fetch(
+                datetime(2026, 8, 15, tzinfo=timezone.utc),
+                datetime(2026, 8, 16, tzinfo=timezone.utc),
+            )
 
 class TestParsing:
     """Test weather record parsing."""
