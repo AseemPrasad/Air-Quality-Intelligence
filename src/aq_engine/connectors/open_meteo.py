@@ -168,10 +168,14 @@ class OpenMeteoConnector(BaseConnector):
                 logger.warning(f"Failed to fetch weather for station {station_id}: {e}")
                 # Continue with other locations
                 continue
-
         if not all_weather_data:
-            logger.warning("No weather data fetched from any location")
-
+            raise IngestionFailed(
+                "No weather data fetched from any location",
+                context={
+                    "source": self.config.source_name,
+                    "locations": len(self._location_mapping),
+                },
+            )
         # Return aggregated response
         response = SourceResponse(
             status_code=200,
