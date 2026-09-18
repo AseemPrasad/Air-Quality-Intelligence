@@ -7,7 +7,7 @@ Includes transaction management, connection pooling, and error handling.
 import logging
 from datetime import datetime, timezone
 from typing import Optional, Tuple
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import (
     BigInteger,
@@ -15,13 +15,14 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Integer,
     String,
     UniqueConstraint,
+    Uuid,
     create_engine,
     func,
     event,
 )
-from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 from sqlalchemy.orm import (
     declarative_base,
@@ -37,6 +38,11 @@ from aq_engine.common import ensure_utc, DatabaseError
 
 logger = logging.getLogger(__name__)
 
+# Surrogate primary keys. SQLite only auto-increments an ``INTEGER PRIMARY KEY``
+# column, so a plain BIGINT key is never filled in there and every insert fails
+# with ``NOT NULL constraint failed``. PostgreSQL keeps BIGINT.
+PrimaryKeyInteger = BigInteger().with_variant(Integer(), "sqlite")
+
 Base = declarative_base()
 
 
@@ -50,7 +56,7 @@ class Source(Base):
 
     __tablename__ = "source"
 
-    source_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    source_id = Column(PrimaryKeyInteger, primary_key=True, autoincrement=True)
     source_name = Column(String(255), unique=True, nullable=False)
     source_type = Column(String(50), nullable=False)  # air_quality, weather
     base_url = Column(String(255))
@@ -76,7 +82,7 @@ class Location(Base):
 
     __tablename__ = "location"
 
-    location_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    location_id = Column(PrimaryKeyInteger, primary_key=True, autoincrement=True)
     location_code = Column(String(100), unique=True, nullable=False)
     name = Column(String(255), nullable=False)
     city = Column(String(100), nullable=False)
@@ -106,7 +112,7 @@ class Station(Base):
 
     __tablename__ = "station"
 
-    station_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    station_id = Column(PrimaryKeyInteger, primary_key=True, autoincrement=True)
     source_id = Column(BigInteger, ForeignKey("source.source_id"), nullable=False)
     source_station_id = Column(String(255), nullable=False)
     location_id = Column(BigInteger, ForeignKey("location.location_id"), nullable=False)
@@ -143,7 +149,7 @@ class Sensor(Base):
 
     __tablename__ = "sensor"
 
-    sensor_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    sensor_id = Column(PrimaryKeyInteger, primary_key=True, autoincrement=True)
     station_id = Column(BigInteger, ForeignKey("station.station_id"), nullable=False)
     source_sensor_id = Column(String(255), nullable=False)
     pollutant_code = Column(String(50), nullable=False)
@@ -174,7 +180,7 @@ class IngestionRun(Base):
 
     __tablename__ = "ingestion_run"
 
-    run_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    run_id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     source_id = Column(BigInteger, ForeignKey("source.source_id"), nullable=False)
     started_at = Column(DateTime(timezone=True), nullable=False)
     finished_at = Column(DateTime(timezone=True))
@@ -205,7 +211,7 @@ class QualityRun(Base):
 
     __tablename__ = "quality_run"
 
-    quality_run_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    quality_run_id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     started_at = Column(DateTime(timezone=True), nullable=False)
     finished_at = Column(DateTime(timezone=True))
     input_records = Column(BigInteger)
@@ -230,7 +236,7 @@ class Model(Base):
 
     __tablename__ = "model"
 
-    model_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    model_id = Column(PrimaryKeyInteger, primary_key=True, autoincrement=True)
     model_name = Column(String(255), nullable=False)
     model_type = Column(String(100), nullable=False)  # linear, random_forest, xgboost
     target = Column(String(100), nullable=False)  # pm25_1h, pm25_3h, etc.
@@ -254,7 +260,7 @@ class ModelVersion(Base):
 
     __tablename__ = "model_version"
 
-    model_version_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    model_version_id = Column(PrimaryKeyInteger, primary_key=True, autoincrement=True)
     model_id = Column(BigInteger, ForeignKey("model.model_id"), nullable=False)
     version = Column(String(50), nullable=False)
     feature_version = Column(String(50), nullable=False)
@@ -289,7 +295,7 @@ class Prediction(Base):
 
     __tablename__ = "prediction"
 
-    prediction_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    prediction_id = Column(PrimaryKeyInteger, primary_key=True, autoincrement=True)
     model_version_id = Column(BigInteger, ForeignKey("model_version.model_version_id"))
     location_id = Column(BigInteger, ForeignKey("location.location_id"), nullable=False)
     generated_at = Column(DateTime(timezone=True), nullable=False)
@@ -618,7 +624,7 @@ class IngestionRunRepository:
 
     def record_run(
         self,
-        run_id: str,
+        run_id: str | UUID,
         source_id: int,
         started_at: datetime,
         status: str,
@@ -659,6 +665,10 @@ class IngestionRunRepository:
                 requested_start = ensure_utc(requested_start)
             if requested_end:
                 requested_end = ensure_utc(requested_end)
+
+            # The orchestrator passes ``str(uuid4())``; the column holds UUID objects.
+            if not isinstance(run_id, UUID):
+                run_id = UUID(str(run_id))
 
             with self.db.session() as session:
                 run = IngestionRun(
