@@ -356,9 +356,14 @@ class Database:
         )
 
         # Create session factory
+        # expire_on_commit=False: the repositories return ORM objects from inside
+        # ``session()``, which commits and closes before the caller sees them. With
+        # the default, every attribute was expired by that commit, and reading one
+        # afterwards raised DetachedInstanceError.
         self.SessionLocal = sessionmaker(
             autocommit=False,
             autoflush=False,
+            expire_on_commit=False,
             bind=self.engine,
         )
 
