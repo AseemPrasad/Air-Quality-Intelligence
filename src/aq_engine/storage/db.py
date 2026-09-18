@@ -29,7 +29,8 @@ from sqlalchemy.orm import (
     sessionmaker,
     Session,
 )
-from sqlalchemy.pool import QueuePool
+from sqlalchemy.engine import make_url
+from sqlalchemy.pool import QueuePool, StaticPool
 import contextlib
 
 from aq_engine.common import ensure_utc, DatabaseError
@@ -344,16 +345,29 @@ class Database:
         self.database_url = database_url
         self.echo = echo
 
-        # Create engine with connection pooling
-        self.engine = create_engine(
-            database_url,
-            poolclass=QueuePool,
-            pool_size=5,
-            max_overflow=10,
-            pool_pre_ping=True,  # Health check before each use
-            pool_recycle=3600,  # Recycle connections every hour
-            echo=echo,
-        )
+        url = make_url(database_url)
+        if url.get_backend_name() == "sqlite" and url.database in (None, "", ":memory:"):
+            # Every new SQLite connection to :memory: opens a separate, empty
+            # database, so with a pool the tables created by create_tables() were
+            # missing on the next checkout ("no such table: ingestion_run").
+            # Share one connection instead.
+            self.engine = create_engine(
+                database_url,
+                poolclass=StaticPool,
+                connect_args={"check_same_thread": False},
+                echo=echo,
+            )
+        else:
+            # Create engine with connection pooling
+            self.engine = create_engine(
+                database_url,
+                poolclass=QueuePool,
+                pool_size=5,
+                max_overflow=10,
+                pool_pre_ping=True,  # Health check before each use
+                pool_recycle=3600,  # Recycle connections every hour
+                echo=echo,
+            )
 
         # Create session factory
         self.SessionLocal = sessionmaker(
