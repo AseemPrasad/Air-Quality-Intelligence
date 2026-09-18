@@ -18,8 +18,9 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     create_engine,
-    func,
     event,
+    func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.exc import SQLAlchemyError, IntegrityError
@@ -404,7 +405,9 @@ class Database:
         """
         try:
             with self.engine.connect() as conn:
-                conn.execute("SELECT 1")
+                # SQLAlchemy 2.x only executes statement objects; a bare string raises
+                # ObjectNotExecutableError, which made this report every database as down.
+                conn.execute(text("SELECT 1"))
             logger.debug("Database health check passed")
             return True
         except Exception as e:
