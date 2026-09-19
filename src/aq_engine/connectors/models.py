@@ -5,8 +5,19 @@ Defines configuration, request/response schemas, and watermark structures.
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
-from datetime import datetime
+from datetime import date, datetime
 import hashlib
+
+
+def _json_default(value: Any) -> str:
+    """Serialise values plain ``json`` cannot, for hashing a response body.
+
+    Connectors that aggregate their own body (Open-Meteo) put parsed ``datetime``
+    objects in it, which ``json.dumps`` rejects with ``TypeError``.
+    """
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 @dataclass
@@ -90,7 +101,7 @@ class SourceResponse:
             else:
                 import json
 
-                payload = json.dumps(self.body, sort_keys=True).encode()
+                payload = json.dumps(self.body, sort_keys=True, default=_json_default).encode()
             self.raw_payload_hash = hashlib.sha256(payload).hexdigest()
 
     def is_success(self) -> bool:
