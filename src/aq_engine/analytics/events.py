@@ -301,7 +301,11 @@ class EventDetector:
         end_time = ensure_utc(anomalies[-1]["hour_start"])
         duration_hours = int((end_time - start_time).total_seconds() / 3600) + 1
 
-        observed_values = [a.get("observed_value") for a in anomalies if a.get("observed_value")]
+        # `is not None`, not truthiness: a 0.0 reading is a real observation, and
+        # a drop to zero from a flat baseline is itself flagged as anomalous.
+        observed_values = [
+            a.get("observed_value") for a in anomalies if a.get("observed_value") is not None
+        ]
         robust_zs = [abs(a.get("robust_z", 0)) for a in anomalies]
 
         peak_value = max(observed_values) if observed_values else None
@@ -434,19 +438,22 @@ class EventDetector:
         end_time = ensure_utc(datetime.fromisoformat(event2["end_time"]))
         duration_hours = int((end_time - start_time).total_seconds() / 3600) + 1
 
-        # Combine peaks and means
-        peak_value = max(event1.get("peak_value", 0), event2.get("peak_value", 0))
+        # Combine peaks and means. An event whose anomalies carried no observed
+        # value has peak_value/mean_value None: max(None, x) raised TypeError, and
+        # treating the missing mean as 0 dragged the merged mean down.
         total_anomalies = event1.get("anomaly_count", 0) + event2.get("anomaly_count", 0)
 
-        mean_value1 = event1.get("mean_value", 0) or 0
-        mean_value2 = event2.get("mean_value", 0) or 0
+        peaks = [e.get("peak_value") for e in (event1, event2) if e.get("peak_value") is not None]
+        peak_value = max(peaks) if peaks else None
 
+        weighted = [
+            (e["mean_value"], e.get("anomaly_count", 1))
+            for e in (event1, event2)
+            if e.get("mean_value") is not None
+        ]
+        weight = sum(count for _, count in weighted)
         mean_value = (
-            (mean_value1 * event1.get("anomaly_count", 1) +
-             mean_value2 * event2.get("anomaly_count", 1)) /
-            total_anomalies
-            if total_anomalies > 0
-            else None
+            sum(mean * count for mean, count in weighted) / weight if weight > 0 else None
         )
 
         peak_anomaly_score = max(
