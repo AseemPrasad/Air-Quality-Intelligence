@@ -9,6 +9,18 @@ from fastapi import APIRouter, Query, HTTPException, status
 
 logger = logging.getLogger(__name__)
 
+
+def _as_utc(value: datetime) -> datetime:
+    """Treat a query timestamp without an offset as UTC.
+
+    FastAPI parses ``2026-08-14T00:00:00`` as a naive datetime and
+    ``2026-08-14T00:00:00Z`` as an aware one. Comparing the two (or a naive one
+    with the aware constants below) raises TypeError, which surfaced as a 500.
+    """
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
 router = APIRouter(
     prefix="/api",
     tags=["Observations"],
@@ -446,6 +458,9 @@ async def get_history(
             detail=f"Location {location_id} not found",
         )
 
+    start_date = _as_utc(start_date)
+    end_date = _as_utc(end_date)
+
     # Validate date range
     if end_date < start_date:
         logger.warning(f"Invalid date range: {start_date} to {end_date}")
@@ -611,6 +626,9 @@ async def get_events(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Location {location_id} not found",
         )
+
+    start_date = _as_utc(start_date)
+    end_date = _as_utc(end_date)
 
     # Validate date range
     if end_date < start_date:
