@@ -1,6 +1,5 @@
 """Command-line interface for Air Quality Intelligence Platform."""
 
-import sys
 import json
 import logging
 import logging.config
@@ -26,6 +25,8 @@ cli_app = typer.Typer(
     no_args_is_help=True
 )
 console = Console()
+# rich's Console.print() has no ``file`` argument; errors go through a stderr console.
+err_console = Console(stderr=True)
 
 
 def _setup_logging(log_level: str, config_dir: str) -> None:
@@ -60,13 +61,10 @@ def _load_config(config_dir: str) -> dict:
     try:
         return load_config(config_dir)
     except FileNotFoundError as e:
-        console.print(f"[red]Error: {e}[/red]", file=sys.stderr)
+        err_console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(code=1)
     except Exception as e:
-        console.print(
-            f"[red]Configuration error: {e}[/red]",
-            file=sys.stderr
-        )
+        err_console.print(f"[red]Configuration error: {e}[/red]")
         raise typer.Exit(code=1)
 
 
