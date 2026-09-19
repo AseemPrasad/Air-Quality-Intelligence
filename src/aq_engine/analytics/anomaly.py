@@ -244,9 +244,8 @@ class AnomalyDetector:
         Returns:
             Approximate Z-score based on distance from median
         """
-        # Simple heuristic: if value is much higher/lower than median,
-        # it's anomalous. Without historical variance, use a threshold.
-        # E.g., if value is 2x the median, flag as anomalous.
+        # Without historical variance there is no scale to measure a deviation
+        # against, so any departure from the median is flagged as HIGH (+/-3).
 
         if baseline_median == 0:
             # With a zero baseline, any non-zero value is a deviation.
@@ -255,13 +254,12 @@ class AnomalyDetector:
             if abs(observed_value) > 100:
                 return 5.0
             return 3.0 if observed_value > 0 else -3.0
-        else:
-            ratio = observed_value / baseline_median
-            if ratio >= 2.0 or ratio <= 0.5:
-                # Value is significantly different from historical median
-                return 3.0 if ratio >= 2.0 else -3.0  # HIGH severity
-            else:
-                return 0.0  # NORMAL
+        # A constant non-zero history has no spread either, so any departure from
+        # it is a deviation (#17). The previous 2x / 0.5x ratio test treated a
+        # reading 90% above a flat baseline as NORMAL.
+        if observed_value == baseline_median:
+            return 0.0
+        return 3.0 if observed_value > baseline_median else -3.0
 
     def _get_fallback_baseline(
         self,
