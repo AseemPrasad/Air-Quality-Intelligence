@@ -9,6 +9,8 @@ import math
 from datetime import datetime, timezone, timedelta
 from unittest.mock import Mock, patch, MagicMock
 
+import requests
+
 from aq_engine.connectors.open_meteo import OpenMeteoConnector, haversine_distance
 from aq_engine.connectors.models import ConnectorConfig, SourceResponse, IngestionRunMetadata
 from aq_engine.common import IngestionFailed, DataContractViolation
@@ -100,9 +102,9 @@ class TestHaversineDistance:
 
     def test_haversine_kolkata_to_east(self):
         """Test distance from Kolkata center to a point east."""
-        # At this latitude, 1 degree east ≈ 92 km
+        # At this latitude, 1 degree east ≈ 111.2 km × cos(22.57°) ≈ 102.7 km
         distance = haversine_distance(22.5726, 88.3639, 22.5726, 89.3639)
-        assert distance == pytest.approx(92.0, rel=0.05)
+        assert distance == pytest.approx(102.7, rel=0.05)
 
     def test_haversine_symmetry(self):
         """Test that distance is symmetric."""
@@ -195,7 +197,8 @@ class TestFetchWeather:
 
         fail_response = Mock()
         fail_response.status_code = 404
-        fail_response.raise_for_status.side_effect = Exception("404 Not Found")
+        fail_response.text = "Not Found"
+        fail_response.raise_for_status.side_effect = requests.HTTPError("404 Not Found")
 
         connector_with_locations._session.get = Mock(side_effect=[fail_response, success_response])
 
@@ -212,7 +215,8 @@ class TestFetchWeather:
         """Test that failure of all locations raises IngestionFailed."""
         fail_response = Mock()
         fail_response.status_code = 404
-        fail_response.raise_for_status.side_effect = Exception("404 Not Found")
+        fail_response.text = "Not Found"
+        fail_response.raise_for_status.side_effect = requests.HTTPError("404 Not Found")
         connector_with_locations._session.get = Mock(return_value=fail_response)
         with pytest.raises(
             IngestionFailed,
@@ -530,11 +534,14 @@ class TestErrorHandling:
         mock_response = Mock()
         mock_response.status_code = 404
         mock_response.text = "Not Found"
-        mock_response.raise_for_status.side_effect = Exception("404 Client Error")
+        mock_response.raise_for_status.side_effect = requests.HTTPError("404 Client Error")
         connector_with_locations._session.get = Mock(return_value=mock_response)
 
         with pytest.raises(IngestionFailed, match="Location not found"):
-            connector_with_locations.fetch(
+            connector_with_locations._fetch_location_weather(
+                "kolkata_center",
+                22.5726,
+                88.3639,
                 datetime(2026, 8, 15, tzinfo=timezone.utc),
                 datetime(2026, 8, 16, tzinfo=timezone.utc),
             )
@@ -544,11 +551,14 @@ class TestErrorHandling:
         mock_response = Mock()
         mock_response.status_code = 500
         mock_response.text = "Internal Server Error"
-        mock_response.raise_for_status.side_effect = Exception("500 Server Error")
+        mock_response.raise_for_status.side_effect = requests.HTTPError("500 Server Error")
         connector_with_locations._session.get = Mock(return_value=mock_response)
 
         with pytest.raises(IngestionFailed, match="Transient error"):
-            connector_with_locations.fetch(
+            connector_with_locations._fetch_location_weather(
+                "kolkata_center",
+                22.5726,
+                88.3639,
                 datetime(2026, 8, 15, tzinfo=timezone.utc),
                 datetime(2026, 8, 16, tzinfo=timezone.utc),
             )
@@ -560,10 +570,58 @@ class TestErrorHandling:
         connector_with_locations._session.get = Mock(side_effect=requests.Timeout("Connection timeout"))
 
         with pytest.raises(IngestionFailed, match="Timeout"):
+            connector_with_locations._fetch_location_weather(
+                "kolkata_center",
+                22.5726,
+                88.3639,
+                datetime(2026, 8, 15, tzinfo=timezone.utc),
+                datetime(2026, 8, 16, tzinfo=timezone.utc),
+            )
+
+    def test_connection_error_is_wrapped_for_the_station(self, connector_with_locations):
+        """A connection failure is reported as IngestionFailed for that station."""
+        connector_with_locations._session.get = Mock(
+            side_effect=requests.ConnectionError("Connection refused")
+        )
+
+        with pytest.raises(IngestionFailed, match="Request failed for station kolkata_center"):
+            connector_with_locations._fetch_location_weather(
+                "kolkata_center",
+                22.5726,
+                88.3639,
+                datetime(2026, 8, 15, tzinfo=timezone.utc),
+                datetime(2026, 8, 16, tzinfo=timezone.utc),
+            )
+
+    def test_one_unreachable_station_does_not_abort_the_fetch(self, connector_with_locations):
+        """Other stations are still fetched when one cannot be reached."""
+        ok = Mock()
+        ok.status_code = 200
+        ok.raise_for_status = Mock()
+        ok.json.return_value = {
+            "hourly": {
+                "time": ["2026-08-15T00:00"],
+                "temperature_2m": [28.5],
+                "relative_humidity_2m": [65],
+                "wind_speed_10m": [8.5],
+                "wind_direction_10m": [180],
+                "pressure_msl": [1013.0],
+                "precipitation": [0.0],
+                "cloud_cover": [40],
+            }
+        }
+        connector_with_locations._session.get = Mock(
+            side_effect=[requests.ConnectionError("Connection refused"), ok]
+        )
+
+        with patch("aq_engine.connectors.open_meteo.SourceResponse") as response_cls:
             connector_with_locations.fetch(
                 datetime(2026, 8, 15, tzinfo=timezone.utc),
                 datetime(2026, 8, 16, tzinfo=timezone.utc),
             )
+
+        body = response_cls.call_args.kwargs["body"]
+        assert body["meta"]["total"] == 1
 
     def test_handle_malformed_json(self, connector_with_locations):
         """Test malformed JSON response."""

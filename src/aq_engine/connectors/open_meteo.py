@@ -320,6 +320,14 @@ class OpenMeteoConnector(BaseConnector):
                 context={"url": url, "station_id": station_id},
             ) from e
 
+        except requests.RequestException as e:
+            # Connection refused, DNS failure, TLS error, ... Previously these escaped
+            # unwrapped and aborted the fetch for every remaining station.
+            raise IngestionFailed(
+                f"Request failed for station {station_id}: {e}",
+                context={"url": url, "station_id": station_id},
+            ) from e
+
         except ValueError as e:
             raise DataContractViolation(
                 f"Malformed JSON response: {str(e)}",
