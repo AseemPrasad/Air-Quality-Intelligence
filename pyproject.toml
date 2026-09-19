@@ -61,6 +61,10 @@ dev = [
     "pytest==7.4.3",
     "pytest-asyncio==0.21.1",
     "pytest-cov==4.1.0",
+    # fastapi.testclient.TestClient needs httpx; the API test modules fail to import without it.
+    "httpx==0.26.0",
+    # Used by tests/performance to measure memory.
+    "psutil==5.9.8",
     "ruff==0.1.6",
     "mypy==1.7.1",
     "black==23.12.0",
