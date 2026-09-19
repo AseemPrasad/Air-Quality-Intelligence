@@ -43,6 +43,9 @@ dependencies = [
 
     # CLI
     "typer[all]==0.9.0",
+    # typer 0.9 allows any click<9, but click 8.2 changed Parameter.make_metavar()
+    # to take a ctx argument, which typer 0.9 does not pass: `aq --help` crashed.
+    "click>=8.0,<8.2",
 
     # Config & Logging
     "pyyaml==6.0.1",
