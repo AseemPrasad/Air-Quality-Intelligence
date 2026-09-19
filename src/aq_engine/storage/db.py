@@ -754,7 +754,11 @@ class IngestionRunRepository:
                     f"Watermark for source {source_id}: "
                     f"event_time={run.requested_end}, ingestion_time={run.finished_at}"
                 )
-                return run.requested_end, run.finished_at
+                # Some backends (SQLite) return DateTime(timezone=True) values without
+                # tzinfo. The orchestrator uses requested_end as the next query start and
+                # compares it with aware times, which raised TypeError.
+                finished_at = ensure_utc(run.finished_at) if run.finished_at else None
+                return ensure_utc(run.requested_end), finished_at
 
         except DatabaseError:
             raise
