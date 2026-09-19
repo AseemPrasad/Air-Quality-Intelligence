@@ -10,14 +10,14 @@ from typing import Optional
 import typer
 from rich.console import Console
 
-from src.aq_engine.config import load_config, LoggingConfig
-from src.aq_engine.connectors.openaq import OpenAQConnector
-from src.aq_engine.connectors.open_meteo import OpenMeteoConnector
-from src.aq_engine.quality.validator import QualityValidator
-from src.aq_engine.analytics.aggregation import LocationAggregator
-from src.aq_engine.analytics.anomaly import AnomalyDetector
-from src.aq_engine.analytics.events import EventDetector
-from src.aq_engine.common.logger import get_logger
+from aq_engine.config import load_config, LoggingConfig
+from aq_engine.connectors.openaq import OpenAQConnector
+from aq_engine.connectors.open_meteo import OpenMeteoConnector
+from aq_engine.quality.validator import QualityValidator
+from aq_engine.analytics.aggregation import LocationAggregator
+from aq_engine.analytics.anomaly import AnomalyDetector
+from aq_engine.analytics.events import EventDetector
+from aq_engine.common.logger import get_logger
 
 # Initialize CLI
 cli_app = typer.Typer(
@@ -850,7 +850,7 @@ def api(
         )
 
         import uvicorn
-        from src.aq_engine.api.main import app as fastapi_app
+        from aq_engine.api.main import app as fastapi_app
 
         uvicorn.run(
             fastapi_app,
