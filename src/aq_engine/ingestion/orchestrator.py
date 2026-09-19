@@ -248,176 +248,158 @@ class IngestionOrchestrator:
 
         return stats
 
-def ingest_source_backfill(
-    self,
-    source_name: str,
-    start_date: date,
-    end_date: date,
-) -> dict:
-    """
-    Backfill historical data one day at a time.
+    def ingest_source_backfill(
+        self,
+        source_name: str,
+        start_date: date,
+        end_date: date,
+    ) -> Dict[str, Any]:
+        """Backfill historical data one day at a time.
 
-    Memory is bounded to the data required for a single day instead of
-    loading the complete requested date range into memory.
+        Memory is bounded to the data required for a single day instead of
+        loading the complete requested date range into memory. Each day follows
+        fetch -> parse -> deduplicate -> write -> release memory -> next day, and
+        uses the same deduplication as ``ingest_source``, so re-running is safe.
 
-    Each day follows this lifecycle:
+        Args:
+            source_name: Source identifier.
+            start_date: Backfill start date (inclusive).
+            end_date: Backfill end date (inclusive).
 
-        fetch -> parse -> deduplicate -> write -> release memory -> next day
+        Returns:
+            Dict with aggregate stats across all days.
 
-    This prevents multi-month/year backfills from retaining the complete
-    payload in memory and significantly reduces the risk of OOM/SIGKILL 137.
-    """
+        Raises:
+            ValueError: If ``start_date`` is after ``end_date``.
+            IngestionFailed: If the source cannot be set up or the run cannot be recorded.
+        """
+        if start_date > end_date:
+            raise ValueError(f"Invalid date range: {start_date} > {end_date}")
 
-    connector = self.connectors.get(source_name)
+        run_id = str(uuid4())
+        started_at = datetime.now(timezone.utc)
+        requested_start = datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc)
+        requested_end = datetime.combine(end_date, datetime.max.time(), tzinfo=timezone.utc)
 
-    if connector is None:
-        raise ValueError(f"No connector configured for source: {source_name}")
+        aggregate_stats: Dict[str, Any] = {
+            "run_id": run_id,
+            "source_name": source_name,
+            "backfill": True,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "total_records_received": 0,
+            "total_records_written": 0,
+            "total_records_rejected": 0,
+            "days_processed": 0,
+            "days_failed": 0,
+            "error_message": None,
+        }
 
-    if start_date > end_date:
-        raise ValueError(
-            f"Invalid date range: {start_date} > {end_date}"
-        )
+        with log_operation(
+            f"backfill_{source_name}",
+            {"run_id": run_id, "start": start_date.isoformat(), "end": end_date.isoformat()},
+        ):
+            try:
+                config = self._load_config(source_name)
+                source_id = self._get_source_id(source_name)
+                connector = self._init_connector(source_name, config)
 
-    aggregate_stats = {
-        "source": source_name,
-        "start_date": start_date.isoformat(),
-        "end_date": end_date.isoformat(),
-        "total_records_received": 0,
-        "total_records_written": 0,
-        "total_records_rejected": 0,
-        "days_processed": 0,
-        "days_failed": 0,
-    }
+                current_date = start_date
+                while current_date <= end_date:
+                    # Keep the processing window strictly limited to one day.
+                    day_start = datetime.combine(
+                        current_date, datetime.min.time(), tzinfo=timezone.utc
+                    )
+                    day_end = datetime.combine(
+                        current_date, datetime.max.time(), tzinfo=timezone.utc
+                    )
 
-    current_date = start_date
+                    # Initialised here so the finally block can always release them.
+                    response = None
+                    parsed_records = None
+                    deduplicated = None
 
-    while current_date <= end_date:
+                    try:
+                        response = connector.fetch(day_start, day_end)
+                        records_received = response.body.get("meta", {}).get("total", 0)
 
-        # Keep the processing window strictly limited to one day.
-        day_start = datetime.combine(
-            current_date,
-            datetime.min.time(),
-            tzinfo=timezone.utc,
-        )
+                        parsed_records = connector.parse(response, day_start, day_end)
+                        deduplicated = self._deduplicate(source_name, parsed_records)
 
-        day_end = datetime.combine(
-            current_date,
-            datetime.max.time(),
-            tzinfo=timezone.utc,
-        )
+                        if deduplicated:
+                            self._write_records(source_name, deduplicated, current_date)
+                            records_written = len(deduplicated)
+                        else:
+                            records_written = 0
 
-        # Explicitly initialize these references so that they can
-        # always be released in the finally block.
-        response = None
-        parsed_records = None
-        deduplicated = None
+                        # Never negative, even if the source metadata is inconsistent.
+                        records_rejected = max(0, records_received - records_written)
 
-        try:
-            logger.info(
-                f"Starting backfill for {source_name} on {current_date}"
-            )
+                        aggregate_stats["total_records_received"] += records_received
+                        aggregate_stats["total_records_written"] += records_written
+                        aggregate_stats["total_records_rejected"] += records_rejected
+                        aggregate_stats["days_processed"] += 1
 
-            # ---------------------------------------------------------
-            # 1. FETCH ONLY ONE DAY
-            # ---------------------------------------------------------
-            response = connector.fetch(
-                day_start,
-                day_end,
-            )
+                        logger.info(
+                            f"Backfill day {current_date} completed: "
+                            f"{records_written} written, {records_rejected} rejected"
+                        )
 
-            records_received = (
-                response.body.get("meta", {}).get("total", 0)
-            )
+                    except Exception as exc:
+                        aggregate_stats["days_failed"] += 1
+                        logger.warning(
+                            f"Backfill failed for {source_name} on {current_date}: {exc}",
+                            exc_info=True,
+                        )
 
-            # ---------------------------------------------------------
-            # 2. PARSE ONLY THAT DAY
-            # ---------------------------------------------------------
-            parsed_records = connector.parse(
-                response,
-                day_start,
-                day_end,
-            )
+                    finally:
+                        # Release the day's objects before moving to the next date.
+                        response = None
+                        parsed_records = None
+                        deduplicated = None
+                        gc.collect()
 
-            # ---------------------------------------------------------
-            # 3. DEDUPLICATE ONLY THAT DAY
-            # ---------------------------------------------------------
-            deduplicated = self._deduplicate(
-                source_name,
-                parsed_records,
-            )
+                    current_date += timedelta(days=1)
 
-            # ---------------------------------------------------------
-            # 4. WRITE ONLY THAT DAY
-            # ---------------------------------------------------------
-            if deduplicated:
-                self._write_records(
-                    source_name,
-                    deduplicated,
-                    current_date,
+                status = "success" if aggregate_stats["days_failed"] == 0 else "partial"
+                self.ingestion_repo.record_run(
+                    run_id=run_id,
+                    source_id=source_id,
+                    started_at=started_at,
+                    finished_at=datetime.now(timezone.utc),
+                    status=status,
+                    records_received=aggregate_stats["total_records_received"],
+                    records_written=aggregate_stats["total_records_written"],
+                    records_rejected=aggregate_stats["total_records_rejected"],
+                    requested_start=requested_start,
+                    requested_end=requested_end,
                 )
 
-                records_written = len(deduplicated)
-            else:
-                records_written = 0
+                aggregate_stats["status"] = status
+                logger.info(
+                    f"Backfill completed for {source_name}: "
+                    f"{aggregate_stats['days_processed']} days processed"
+                )
 
-            # Do not allow a negative rejected count if the source
-            # metadata is inconsistent.
-            records_rejected = max(
-                0,
-                records_received - records_written,
-            )
+            except Exception as e:
+                aggregate_stats["status"] = "failed"
+                aggregate_stats["error_message"] = str(e)
+                logger.error(f"Backfill failed: {e}", exc_info=True)
+                raise IngestionFailed(
+                    f"Backfill failed: {str(e)}",
+                    context={
+                        "source": source_name,
+                        "start_date": start_date.isoformat(),
+                        "end_date": end_date.isoformat(),
+                    },
+                ) from e
 
-            aggregate_stats["total_records_received"] += (
-                records_received
-            )
+            finally:
+                aggregate_stats["duration_seconds"] = (
+                    datetime.now(timezone.utc) - started_at
+                ).total_seconds()
 
-            aggregate_stats["total_records_written"] += (
-                records_written
-            )
-
-            aggregate_stats["total_records_rejected"] += (
-                records_rejected
-            )
-
-            aggregate_stats["days_processed"] += 1
-
-            logger.info(
-                f"Backfill day {current_date} completed: "
-                f"{records_written} written, "
-                f"{records_rejected} rejected"
-            )
-
-        except Exception as exc:
-            aggregate_stats["days_failed"] += 1
-
-            logger.warning(
-                f"Backfill failed for {source_name} "
-                f"on {current_date}: {exc}",
-                exc_info=True,
-            )
-
-        finally:
-            # ---------------------------------------------------------
-            # IMPORTANT:
-            # Release all large per-day objects BEFORE moving to the
-            # next date.
-            # ---------------------------------------------------------
-            response = None
-            parsed_records = None
-            deduplicated = None
-
-            gc.collect()
-
-        # Move to the next day only after the previous day's objects
-        # have been released.
-        current_date += timedelta(days=1)
-
-    logger.info(
-        f"Backfill completed for {source_name}: "
-        f"{aggregate_stats}"
-    )
-
-    return aggregate_stats
+        return aggregate_stats
 
     def _load_config(self, source_name: str) -> Dict[str, Any]:
         """Load connector configuration from YAML.
