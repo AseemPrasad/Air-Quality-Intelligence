@@ -102,6 +102,43 @@ class TestEventDetection:
         assert event["anomaly_count"] == 3
         assert event["duration_hours"] == 4
 
+    def test_anomalies_spanning_five_hours_are_not_a_4h_window(self, detector):
+        """Hours 0, 2 and 4 fall in a 5-hour span, not a 4-hour window."""
+        base_time = datetime(2026, 8, 15, 8, 0, 0, tzinfo=timezone.utc)
+        anomalies = [
+            {
+                "location_id": "kolkata",
+                "pollutant": "pm25",
+                "hour_start": base_time + timedelta(hours=offset),
+                "observed_value": 150.0,
+                "robust_z": 3.5,
+                "severity": "HIGH",
+            }
+            for offset in (0, 2, 4)
+        ]
+
+        assert detector.detect_events(anomalies) == []
+
+    def test_anomalies_in_the_last_hour_of_the_window_count(self, detector):
+        """Hours 0, 1 and 3 are inside the 4-hour window starting at hour 0."""
+        base_time = datetime(2026, 8, 15, 8, 0, 0, tzinfo=timezone.utc)
+        anomalies = [
+            {
+                "location_id": "kolkata",
+                "pollutant": "pm25",
+                "hour_start": base_time + timedelta(hours=offset),
+                "observed_value": 150.0,
+                "robust_z": 3.5,
+                "severity": "HIGH",
+            }
+            for offset in (0, 1, 3)
+        ]
+
+        events = detector.detect_events(anomalies)
+
+        assert len(events) == 1
+        assert events[0]["duration_hours"] == 4
+
     def test_two_high_anomalies_no_event(self, detector):
         """Test only 2 HIGH anomalies don't create event (need 3)."""
         base_time = datetime(2026, 8, 15, 12, 0, 0, tzinfo=timezone.utc)

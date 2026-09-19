@@ -269,9 +269,11 @@ class EventDetector:
         for i in range(start_idx, len(anomalies)):
             anomaly_time = ensure_utc(anomalies[i].get("hour_start"))
 
-            if window_start <= anomaly_time <= window_end:
+            # Half-open: a 4-hour window starting at 09:00 covers the 09, 10, 11
+            # and 12 o'clock hours. Including window_end let a fifth hour count.
+            if window_start <= anomaly_time < window_end:
                 indices.append(i)
-            elif anomaly_time > window_end:
+            elif anomaly_time >= window_end:
                 break
 
         return indices if len(indices) >= min_count else []
