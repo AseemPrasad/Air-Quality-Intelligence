@@ -154,13 +154,29 @@ open http://localhost:8080  # admin / admin
 
 # Option B: Via CLI
 docker-compose exec api python -c "
-from src.aq_engine.connectors import OpenAQConnector
-from src.aq_engine.storage import ParquetStorage
+from src.aq_engine.connectors.openaq import OpenAQConnector
+from src.aq_engine.connectors.models import ConnectorConfig
 
-storage = ParquetStorage('/data/parquet')
-connector = OpenAQConnector()
-records = connector.fetch()
-storage.write(records)
+config = ConnectorConfig(
+    source_name='openaq',
+    source_type='air_quality',
+    base_url='https://api.openaq.org/v3',
+)
+connector = OpenAQConnector(config)
+
+# ingest() handles fetch -> parse -> validate -> write to Parquet in one call
+run_id, metadata = connector.ingest(lookback_hours=6)
+print(f'Run {run_id}: wrote {metadata.records_written} records')
+"
+
+# Read back what was written
+docker-compose exec api python -c "
+from src.aq_engine.storage import ParquetWriter
+from datetime import date
+
+reader = ParquetWriter(root_path='data/raw')
+df = reader.read_raw_air_quality((date.today(), date.today()))
+print(f'{len(df)} records on disk for today')
 "
 
 # Verify data flow
