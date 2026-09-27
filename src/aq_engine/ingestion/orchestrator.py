@@ -26,7 +26,7 @@ from aq_engine.connectors.models import ConnectorConfig
 from aq_engine.quality.contracts import RawAirQualityRecord, RawWeatherRecord
 from aq_engine.quality.hashing import generate_measurement_key, generate_weather_key
 from aq_engine.storage.parquet_io import ParquetWriter
-from aq_engine.storage.db import Database, IngestionRunRepository, LocationRepository, StationRepository
+from aq_engine.storage.db import Database, IngestionRunRepository, LocationRepository, StationRepository, SourceRepository
 
 
 logger = logging.getLogger(__name__)
@@ -73,6 +73,7 @@ class IngestionOrchestrator:
         self.ingestion_repo = IngestionRunRepository(self.db)
         self.location_repo = LocationRepository(self.db)
         self.station_repo = StationRepository(self.db)
+        self.source_repo = SourceRepository(self.db)
 
         logger.info(
             f"IngestionOrchestrator initialized: "
@@ -132,10 +133,15 @@ class IngestionOrchestrator:
             f"ingest_{source_name}",
             {"run_id": run_id, "source": source_name},
         ):
+            source_id = None  # Initialize to handle error cases
             try:
                 # Load config
                 config = self._load_config(source_name)
-                source_id = self._get_source_id(source_name)
+                source_id = self._get_source_id(
+                    source_name,
+                    source_type=config[source_name]["source_type"],
+                    base_url=config[source_name].get("base_url")
+                )
 
                 # Initialize connector
                 connector = self._init_connector(source_name, config)
@@ -199,17 +205,18 @@ class IngestionOrchestrator:
                 stats["error_message"] = str(e)
 
                 # Record failed run (watermark NOT advanced)
-                try:
-                    self.ingestion_repo.record_run(
-                        run_id=run_id,
-                        source_id=self._get_source_id(source_name),
-                        started_at=started_at,
-                        finished_at=datetime.now(timezone.utc),
-                        status="failed",
-                        error_message=str(e),
-                    )
-                except DatabaseError as db_err:
-                    logger.error(f"Failed to record ingestion failure: {db_err}")
+                if source_id:
+                    try:
+                        self.ingestion_repo.record_run(
+                            run_id=run_id,
+                            source_id=source_id,
+                            started_at=started_at,
+                            finished_at=datetime.now(timezone.utc),
+                            status="failed",
+                            error_message=str(e),
+                        )
+                    except DatabaseError as db_err:
+                        logger.error(f"Failed to record ingestion failure: {db_err}")
 
                 slog.ingestion_error(source_name, error=str(e))
                 logger.error(f"Ingestion failed: {e}", exc_info=True)
@@ -278,7 +285,11 @@ class IngestionOrchestrator:
             try:
                 # Load config and connector
                 config = self._load_config(source_name)
-                source_id = self._get_source_id(source_name)
+                source_id = self._get_source_id(
+                    source_name,
+                    source_type=config[source_name]["source_type"],
+                    base_url=config[source_name].get("base_url")
+                )
                 connector = self._init_connector(source_name, config)
 
                 # Iterate over dates
@@ -399,11 +410,13 @@ class IngestionOrchestrator:
                 context={"config_path": str(config_path)},
             ) from e
 
-    def _get_source_id(self, source_name: str) -> int:
+    def _get_source_id(self, source_name: str, source_type: str, base_url: Optional[str] = None) -> int:
         """Get or create source in database.
 
         Args:
             source_name: Source identifier.
+            source_type: Source type ('air_quality' or 'weather').
+            base_url: Base URL for the source API (optional).
 
         Returns:
             Source ID.
@@ -411,10 +424,13 @@ class IngestionOrchestrator:
         Raises:
             DatabaseError: On database error.
         """
-        # TODO: Implement after source repository is created
-        # For now, return hardcoded IDs for testing
-        source_ids = {"openaq": 1, "open_meteo": 2}
-        return source_ids.get(source_name, 0)
+        source = self.source_repo.get_or_create(
+            source_name=source_name,
+            source_type=source_type,
+            base_url=base_url,
+            active=True,
+        )
+        return source.source_id
 
     def _init_connector(self, source_name: str, config: Dict[str, Any]):
         """Initialize connector instance.

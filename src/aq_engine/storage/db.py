@@ -454,6 +454,127 @@ class Database:
 # ============================================================================
 
 
+class SourceRepository:
+    """CRUD operations for data sources."""
+
+    def __init__(self, db: Database):
+        """Initialize repository.
+
+        Args:
+            db: Database instance.
+        """
+        self.db = db
+
+    def get_or_create(
+        self,
+        source_name: str,
+        source_type: str,
+        base_url: Optional[str] = None,
+        active: bool = True,
+    ) -> Source:
+        """Get existing source or create new one.
+
+        Args:
+            source_name: Unique source name (e.g., 'openaq', 'open_meteo').
+            source_type: Source type ('air_quality' or 'weather').
+            base_url: Base URL for the source API (optional).
+            active: Whether the source is active (default: True).
+
+        Returns:
+            Source object.
+
+        Raises:
+            DatabaseError: On database error.
+        """
+        try:
+            with self.db.session() as session:
+                # Try to find existing source
+                source = session.query(Source).filter_by(source_name=source_name).first()
+
+                if source:
+                    logger.debug(f"Found existing source: {source_name} (ID: {source.source_id})")
+                    return source
+
+                # Create new source
+                source = Source(
+                    source_name=source_name,
+                    source_type=source_type,
+                    base_url=base_url,
+                    active=active,
+                )
+                session.add(source)
+                session.commit()
+                session.refresh(source)
+
+                logger.info(
+                    f"Created new source: {source_name} (ID: {source.source_id})",
+                    extra={"source_id": source.source_id, "source_type": source_type}
+                )
+                return source
+
+        except IntegrityError as e:
+            session.rollback()
+            logger.error(f"Integrity error creating source {source_name}: {e}")
+            raise DatabaseError(
+                f"Source {source_name} violates database constraints",
+                context={"source_name": source_name, "error": str(e)},
+            ) from e
+        except SQLAlchemyError as e:
+            session.rollback()
+            logger.error(f"Database error accessing source {source_name}: {e}")
+            raise DatabaseError(
+                f"Database error for source {source_name}",
+                context={"source_name": source_name, "error": str(e)},
+            ) from e
+        except Exception as e:
+            session.rollback()
+            raise DatabaseError(
+                f"Unexpected error accessing source: {str(e)}",
+                context={"error_type": type(e).__name__},
+            ) from e
+
+    def get_by_name(self, source_name: str) -> Optional[Source]:
+        """Get source by name.
+
+        Args:
+            source_name: Source name.
+
+        Returns:
+            Source object or None if not found.
+
+        Raises:
+            DatabaseError: On database error.
+        """
+        try:
+            with self.db.session() as session:
+                return session.query(Source).filter_by(source_name=source_name).first()
+        except SQLAlchemyError as e:
+            logger.error(f"Database error retrieving source {source_name}: {e}")
+            raise DatabaseError(
+                f"Database error retrieving source {source_name}",
+                context={"error": str(e)},
+            ) from e
+
+    def list_active(self) -> list[Source]:
+        """List all active sources.
+
+        Returns:
+            List of active Source objects.
+
+        Raises:
+            DatabaseError: On database error.
+        """
+        try:
+            with self.db.session() as session:
+                return session.query(Source).filter_by(active=True).all()
+        except SQLAlchemyError as e:
+            logger.error(f"Database error listing active sources: {e}")
+            raise DatabaseError(
+                "Database error listing active sources",
+                context={"error": str(e)},
+            ) from e
+
+
 class LocationRepository:
     """CRUD operations for locations."""
 
