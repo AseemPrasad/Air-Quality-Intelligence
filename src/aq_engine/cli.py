@@ -18,6 +18,8 @@ from src.aq_engine.analytics.aggregation import LocationAggregator
 from src.aq_engine.analytics.anomaly import AnomalyDetector
 from src.aq_engine.analytics.events import EventDetector
 from src.aq_engine.common.logger import get_logger
+from src.aq_engine.storage.db import Database
+from src.aq_engine.storage.parquet_io import ParquetWriter
 
 # Initialize CLI
 cli_app = typer.Typer(
@@ -144,8 +146,8 @@ def ingest(
         )
 
         # Initialize components
-        storage = ParquetStorage(config.data.parquet_path)
-        db = DatabaseConnection(config.database.url)
+        writer = ParquetWriter(config.data.parquet_path)
+        db = Database(config.database.url)
 
         if source == "openaq":
             connector = OpenAQConnector(
@@ -163,7 +165,7 @@ def ingest(
             end_date=end_date
         )
 
-        storage.write(records, source=source)
+        writer.write(records, source=source)
         db.update_watermark(source, datetime.utcnow().isoformat())
 
         logger.info(
@@ -225,11 +227,11 @@ def validate(
             extra={"operation": "validate", "date": date, "status": "started"}
         )
 
-        storage = ParquetStorage(config.data.parquet_path)
+        writer = ParquetWriter(config.data.parquet_path)
         validator = QualityValidator()
 
         # Load raw data
-        records = storage.read(date)
+        records = writer.read(date)
 
         # Validate
         valid_records = []
@@ -307,8 +309,8 @@ def aggregate(
             extra={"operation": "aggregate", "date": date, "status": "started"}
         )
 
-        storage = ParquetStorage(config.data.parquet_path)
-        aggregator = LocationAggregator(storage)
+        writer = ParquetWriter(config.data.parquet_path)
+        aggregator = LocationAggregator(writer)
 
         # Compute aggregates
         facts_count = aggregator.aggregate_date(date)
@@ -374,7 +376,7 @@ def detect_anomalies(
             }
         )
 
-        db = DatabaseConnection(config.database.url)
+        db = Database(config.database.url)
         detector = AnomalyDetector(db)
 
         # Detect anomalies
@@ -441,7 +443,7 @@ def detect_events(
             }
         )
 
-        db = DatabaseConnection(config.database.url)
+        db = Database(config.database.url)
         detector = EventDetector(db, config.analytics)
 
         # Detect events
@@ -687,8 +689,8 @@ def backfill(
             }
         )
 
-        storage = ParquetStorage(config.data.parquet_path)
-        db = DatabaseConnection(config.database.url)
+        writer = ParquetWriter(config.data.parquet_path)
+        db = Database(config.database.url)
 
         if source not in ("openaq", "weather"):
             return _print_json_result(
@@ -716,7 +718,7 @@ def backfill(
                 end_date=current_date
             )
             if records:
-                storage.write(records, source=source)
+                writer.write(records, source=source)
                 total_records += len(records)
             # Advance to next day
             current_date = (
@@ -781,18 +783,18 @@ def health(
             extra={"operation": "health", "status": "started"}
         )
 
-        db = DatabaseConnection(config.database.url)
-        storage = ParquetStorage(config.data.parquet_path)
+        db = Database(config.database.url)
+        writer = ParquetWriter(config.data.parquet_path)
 
         # Check components
         db_status = "ok" if db.is_connected() else "error"
-        storage_status = "ok" if storage.is_accessible() else "error"
+        writer_status = "ok" if writer.is_accessible() else "error"
 
         health = {
             "database": db_status,
-            "storage": storage_status,
+            "storage": writer_status,
             "overall": "ok" if all(
-                s == "ok" for s in [db_status, storage_status]
+                s == "ok" for s in [db_status, writer_status]
             ) else "degraded"
         }
 
