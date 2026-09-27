@@ -12,8 +12,12 @@ from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 
 from aq_engine.api.observations import router as observations_router
+from aq_engine.api.rate_limit import RateLimiter
 
 logger = logging.getLogger(__name__)
+
+# Initialize rate limiter (100 requests per minute per IP)
+rate_limiter = RateLimiter(requests_per_minute=100)
 
 # Version info
 __version__ = "0.1.0"
@@ -109,6 +113,9 @@ app.add_middleware(
 @app.middleware("http")
 async def logging_middleware(request: Request, call_next: Callable) -> JSONResponse:
     """Log all requests with structured format."""
+    # Check rate limit first
+    await rate_limiter(request)
+    
     request_id = str(uuid.uuid4())
     request.state.request_id = request_id
 
@@ -129,8 +136,12 @@ async def logging_middleware(request: Request, call_next: Callable) -> JSONRespo
             }
         )
 
-        # Add request ID to response headers
+        # Add request ID and rate limit headers to response
         response.headers["X-Request-ID"] = request_id
+        if hasattr(request.state, "rate_limit_remaining"):
+            response.headers["X-RateLimit-Remaining"] = str(request.state.rate_limit_remaining)
+            response.headers["X-RateLimit-Limit"] = "100"
+        
         return response
 
     except Exception as e:
