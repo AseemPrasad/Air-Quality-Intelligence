@@ -3,6 +3,7 @@
 import logging
 import uuid
 import time
+import os
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -91,14 +92,17 @@ app = FastAPI(
 app.include_router(observations_router)
 
 
+# Get CORS origins from environment variable or use defaults
+cors_origins_str = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:3000,http://localhost:8501,http://localhost:8000"
+)
+cors_origins = [origin.strip() for origin in cors_origins_str.split(",")]
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",    # Dashboard
-        "http://localhost:8501",    # Streamlit
-        "http://localhost:8000",    # FastAPI docs
-    ],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

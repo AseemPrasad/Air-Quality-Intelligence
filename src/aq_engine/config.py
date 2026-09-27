@@ -39,6 +39,7 @@ class APIConfig(BaseModel):
     workers: int = 4
     timeout_seconds: int = 30
     log_level: str = "INFO"
+    cors_origins: str = "http://localhost:3000,http://localhost:8501,http://localhost:8000"
 
 
 class ConnectorsConfig(BaseModel):
