@@ -57,18 +57,7 @@ https://your-domain.com
 
 ## Response Format
 
-All responses follow a consistent JSON structure:
-
-### Success Response
-
-```json
-{
-  "status": "success",
-  "data": {
-    // Response data
-  },
-  "timestamp": "2026-09-27T10:30:00Z"
-}
+Responses use endpoint-specific JSON objects. The examples below show the exact top-level shape returned by each endpoint.
 ```
 
 ### Error Response
