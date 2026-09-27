@@ -131,9 +131,20 @@ class QualityValidator:
             - invalid_records: list of (record, reasons) tuples
             - suspicious_records: list of (record, warnings) tuples
         """
-        validator_func = (
-            self.validate_air_quality if source_type == "air_quality" else self.validate_weather
-        )
+       
+        validators = {
+            "air_quality": self.validate_air_quality,
+            "weather": self.validate_weather,
+        }
+
+        try:
+            validator_func = validators[source_type]
+        except KeyError as exc:
+            supported = ", ".join(sorted(validators))
+            raise ValueError(
+                f"Unsupported source_type {source_type!r}; "
+                f"expected one of: {supported}"
+            ) from exc
 
         result = {
             self.VALID: 0,

@@ -15,9 +15,13 @@ from datetime import datetime, timedelta
 from typing import Any, Dict
 
 from airflow import DAG
+from airflow.exceptions import AirflowException
 from airflow.operators.dummy import DummyOperator
 from airflow.operators.python import PythonOperator
 from airflow.utils.dates import days_ago
+
+from aq_engine.ingestion.orchestrator import IngestionOrchestrator
+from aq_engine.common import IngestionFailed
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +65,10 @@ def log_task_info(task_name: str, **context: Any) -> None:
 
 
 def ingest_openaq(**context: Any) -> Dict[str, Any]:
-    """Ingest data from OpenAQ API."""
+    """Ingest data from OpenAQ API using IngestionOrchestrator.
+
+    Raises AirflowException if ingestion fails to propagate failure to Airflow.
+    """
     task_instance = context["task_instance"]
     execution_date = context["execution_date"]
 
@@ -70,27 +77,53 @@ def ingest_openaq(**context: Any) -> Dict[str, Any]:
         "task": "ingest_openaq",
         "execution_date": execution_date.isoformat(),
         "status": "running",
+        "source": "openaq",
     }
 
     logger.info(f"Starting OpenAQ ingestion: {json.dumps(log_data)}")
 
-    # Mock ingestion - in production, would call actual connector
-    result = {
-        "source": "openaq",
-        "records_fetched": 1200,
-        "duration_seconds": 45,
-        "success": True,
-    }
+    try:
+        orchestrator = IngestionOrchestrator(
+            config_dir="configs",
+            storage_root="data/raw",
+            db_url="postgresql://localhost/aq_control",
+        )
 
-    log_data.update(result)
-    logger.info(f"OpenAQ ingestion complete: {json.dumps(log_data)}")
+        result = orchestrator.ingest_source("openaq", lookback_hours=6.0)
 
-    task_instance.xcom_push(key="openaq_records", value=result["records_fetched"])
-    return result
+        # Check result status and propagate failure to Airflow
+        if result.get("status") != "success":
+            error_msg = result.get("error_message", "Unknown error")
+            logger.error(f"OpenAQ ingestion failed: {error_msg}")
+            raise AirflowException(
+                f"OpenAQ ingestion failed with status '{result.get('status')}': {error_msg}"
+            )
+
+        log_data.update(result)
+        logger.info(f"OpenAQ ingestion complete: {json.dumps(log_data)}")
+
+        task_instance.xcom_push(key="openaq_records", value=result.get("records_written", 0))
+        return result
+
+    except IngestionFailed as e:
+        # IngestionFailed is raised by orchestrator on critical failures
+        # Propagate to Airflow as AirflowException
+        logger.error(f"OpenAQ ingestion failed: {str(e)}", exc_info=True)
+        raise AirflowException(f"OpenAQ ingestion failed: {str(e)}") from e
+    except AirflowException:
+        # Re-raise AirflowException as-is
+        raise
+    except Exception as e:
+        # Catch any unexpected exceptions and convert to AirflowException
+        logger.error(f"Unexpected error during OpenAQ ingestion: {str(e)}", exc_info=True)
+        raise AirflowException(f"OpenAQ ingestion failed unexpectedly: {str(e)}") from e
 
 
 def ingest_weather(**context: Any) -> Dict[str, Any]:
-    """Ingest weather data from Open-Meteo API."""
+    """Ingest weather data from Open-Meteo API using IngestionOrchestrator.
+
+    Raises AirflowException if ingestion fails to propagate failure to Airflow.
+    """
     task_instance = context["task_instance"]
     execution_date = context["execution_date"]
 
@@ -99,22 +132,46 @@ def ingest_weather(**context: Any) -> Dict[str, Any]:
         "task": "ingest_weather",
         "execution_date": execution_date.isoformat(),
         "status": "running",
+        "source": "open_meteo",
     }
 
     logger.info(f"Starting weather ingestion: {json.dumps(log_data)}")
 
-    result = {
-        "source": "open_meteo",
-        "records_fetched": 450,
-        "duration_seconds": 30,
-        "success": True,
-    }
+    try:
+        orchestrator = IngestionOrchestrator(
+            config_dir="configs",
+            storage_root="data/raw",
+            db_url="postgresql://localhost/aq_control",
+        )
 
-    log_data.update(result)
-    logger.info(f"Weather ingestion complete: {json.dumps(log_data)}")
+        result = orchestrator.ingest_source("open_meteo", lookback_hours=6.0)
 
-    task_instance.xcom_push(key="weather_records", value=result["records_fetched"])
-    return result
+        # Check result status and propagate failure to Airflow
+        if result.get("status") != "success":
+            error_msg = result.get("error_message", "Unknown error")
+            logger.error(f"Weather ingestion failed: {error_msg}")
+            raise AirflowException(
+                f"Weather ingestion failed with status '{result.get('status')}': {error_msg}"
+            )
+
+        log_data.update(result)
+        logger.info(f"Weather ingestion complete: {json.dumps(log_data)}")
+
+        task_instance.xcom_push(key="weather_records", value=result.get("records_written", 0))
+        return result
+
+    except IngestionFailed as e:
+        # IngestionFailed is raised by orchestrator on critical failures
+        # Propagate to Airflow as AirflowException
+        logger.error(f"Weather ingestion failed: {str(e)}", exc_info=True)
+        raise AirflowException(f"Weather ingestion failed: {str(e)}") from e
+    except AirflowException:
+        # Re-raise AirflowException as-is
+        raise
+    except Exception as e:
+        # Catch any unexpected exceptions and convert to AirflowException
+        logger.error(f"Unexpected error during weather ingestion: {str(e)}", exc_info=True)
+        raise AirflowException(f"Weather ingestion failed unexpectedly: {str(e)}") from e
 
 
 def validate_raw(**context: Any) -> Dict[str, Any]:

@@ -46,14 +46,15 @@ class ModelEvaluator:
         rmse = float(np.sqrt(np.mean(squared_errors)))
         median_ae = float(np.median(errors))
 
-        # MAPE (handle division by zero)
-        mape_values = np.divide(
-            errors,
-            np.maximum(np.abs(actual), 1e-10),
-            out=np.zeros_like(errors),
-            where=np.abs(actual) > 1e-10,
-        )
-        mape = float(np.mean(mape_values) * 100) if np.any(actual > 1e-10) else None
+        # MAPE is undefined for zero-valued targets. Exclude those rows from
+        # both the numerator and the denominator rather than treating them as
+        # artificial zero-error terms in the mean.
+        nonzero_actual = np.abs(actual) > 1e-10
+        if np.any(nonzero_actual):
+            mape_values = errors[nonzero_actual] / np.abs(actual[nonzero_actual])
+            mape = float(np.mean(mape_values) * 100)
+        else:
+            mape = None
 
         return {
             "mae": mae,

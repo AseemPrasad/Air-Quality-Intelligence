@@ -4,7 +4,7 @@ Handles timezone conversions, UTC validation, partitioning, and temporal checks
 with comprehensive edge-case handling for DST, future dates, and timezone awareness.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import pytz
 
 
@@ -133,23 +133,36 @@ def is_future(dt: datetime, tolerance_hours: float = 0) -> bool:
     return dt > threshold
 
 
-def date_partition_path(dt: datetime) -> str:
+def date_partition_path(dt: datetime | date) -> str:
     """Generate partition path for data storage.
 
     Returns Parquet partition-like path: "year=YYYY/month=MM/day=DD"
 
+    Accepts both ``datetime`` and plain ``date`` objects.  A plain ``date`` is
+    treated as midnight UTC (no timezone conversion needed because date objects
+    carry no time component and the partition granularity is day-level).
+
     Args:
-        dt: datetime object.
+        dt: datetime or date object.
 
     Returns:
         Partition path string.
 
     Example:
-        >>> dt = datetime(2026, 8, 15, 12, 30, 0, tzinfo=UTC)
-        >>> date_partition_path(dt)
+        >>> from datetime import date, datetime
+        >>> date_partition_path(date(2026, 8, 15))
+        'year=2026/month=08/day=15'
+        >>> date_partition_path(datetime(2026, 8, 15, 12, 30, 0, tzinfo=UTC))
         'year=2026/month=08/day=15'
     """
-    dt = ensure_utc(dt)
+    if isinstance(dt, datetime):
+        # Full datetime: normalise to UTC so the partition reflects the UTC date.
+        dt = ensure_utc(dt)
+    elif isinstance(dt, date):
+        # Plain date: no time component, use year/month/day directly.
+        pass
+    else:
+        raise TypeError(f"Expected datetime or date, got {type(dt).__name__}")
     return f"year={dt.year:04d}/month={dt.month:02d}/day={dt.day:02d}"
 
 

@@ -4,6 +4,7 @@ Ties together connectors, quality validation, storage, and control plane.
 Implements idempotency, watermark management, and comprehensive error handling.
 """
 
+import gc
 import logging
 import yaml
 from datetime import date, datetime, timezone, timedelta
@@ -25,6 +26,7 @@ from aq_engine.connectors.open_meteo import OpenMeteoConnector
 from aq_engine.connectors.models import ConnectorConfig
 from aq_engine.quality.contracts import RawAirQualityRecord, RawWeatherRecord
 from aq_engine.quality.hashing import generate_measurement_key, generate_weather_key
+from aq_engine.quality.deduplication import Deduplicator
 from aq_engine.storage.parquet_io import ParquetWriter
 from aq_engine.storage.db import Database, IngestionRunRepository, LocationRepository, StationRepository
 
@@ -67,6 +69,7 @@ class IngestionOrchestrator:
 
         # Initialize storage and database
         self.parquet_writer = ParquetWriter(root_path=storage_root)
+        self.deduplicator = Deduplicator(storage_root=storage_root)
         self.db = Database(db_url, echo=False)
 
         # Initialize repositories
@@ -166,11 +169,24 @@ class IngestionOrchestrator:
 
                 # Write to Parquet
                 if deduplicated:
-                    partition_date = query_end.date()
-                    self._write_records(source_name, deduplicated, partition_date)
+                    records_by_date = {}
+
+                    for record in deduplicated:
+                        partition_date = ensure_utc(record["observed_at"]).date()
+                        records_by_date.setdefault(partition_date, []).append(record)
+
+                    for partition_date, partition_records in records_by_date.items():
+                        self._write_records(
+                            source_name,
+                            partition_records,
+                            partition_date,
+                        )
+
                     stats["records_written"] = len(deduplicated)
                 else:
-                    logger.warning(f"No records to write for {source_name} after deduplication")
+                    logger.warning(
+                        f"No records to write for {source_name} after deduplication"
+                    )
 
                 # Record to PostgreSQL
                 self.ingestion_repo.record_run(
@@ -238,10 +254,12 @@ class IngestionOrchestrator:
         start_date: date,
         end_date: date,
     ) -> Dict[str, Any]:
-        """Backfill historical data for date range.
+        """Backfill historical data one day at a time.
 
-        Iterates day-by-day, same orchestration as ingest_source.
-        Uses same deduplication logic, so safe to re-run.
+        Memory is bounded to the data required for a single day instead of
+        loading the complete requested date range into memory. Each day follows
+        fetch -> parse -> deduplicate -> write -> release memory -> next day, and
+        uses the same deduplication as ``ingest_source``, so re-running is safe.
 
         Args:
             source_name: Source identifier.
@@ -252,12 +270,18 @@ class IngestionOrchestrator:
             Dict with aggregate stats across all days.
 
         Raises:
-            IngestionFailed: If any day's ingestion fails critically.
+            ValueError: If ``start_date`` is after ``end_date``.
+            IngestionFailed: If the source cannot be set up or the run cannot be recorded.
         """
+        if start_date > end_date:
+            raise ValueError(f"Invalid date range: {start_date} > {end_date}")
+
         run_id = str(uuid4())
         started_at = datetime.now(timezone.utc)
+        requested_start = datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc)
+        requested_end = datetime.combine(end_date, datetime.max.time(), tzinfo=timezone.utc)
 
-        aggregate_stats = {
+        aggregate_stats: Dict[str, Any] = {
             "run_id": run_id,
             "source_name": source_name,
             "backfill": True,
@@ -276,77 +300,86 @@ class IngestionOrchestrator:
             {"run_id": run_id, "start": start_date.isoformat(), "end": end_date.isoformat()},
         ):
             try:
-                # Load config and connector
                 config = self._load_config(source_name)
                 source_id = self._get_source_id(source_name)
                 connector = self._init_connector(source_name, config)
 
-                # Iterate over dates
-                for day_date in get_date_range(
-                    datetime.combine(start_date, datetime.min.time()).replace(tzinfo=timezone.utc),
-                    datetime.combine(end_date, datetime.max.time()).replace(tzinfo=timezone.utc),
-                ):
-                    day_start = datetime.combine(day_date.date(), datetime.min.time()).replace(
-                        tzinfo=timezone.utc
+                current_date = start_date
+                while current_date <= end_date:
+                    # Keep the processing window strictly limited to one day.
+                    day_start = datetime.combine(
+                        current_date, datetime.min.time(), tzinfo=timezone.utc
                     )
-                    day_end = datetime.combine(day_date.date(), datetime.max.time()).replace(
-                        tzinfo=timezone.utc
+                    day_end = datetime.combine(
+                        current_date, datetime.max.time(), tzinfo=timezone.utc
                     )
 
+                    # Initialised here so the finally block can always release them.
+                    response = None
+                    parsed_records = None
+                    deduplicated = None
+
                     try:
-                        # Fetch data for this day
                         response = connector.fetch(day_start, day_end)
                         records_received = response.body.get("meta", {}).get("total", 0)
 
-                        # Parse and validate
                         parsed_records = connector.parse(response, day_start, day_end)
                         deduplicated = self._deduplicate(source_name, parsed_records)
 
-                        # Write to Parquet
                         if deduplicated:
-                            self._write_records(source_name, deduplicated, day_date.date())
+                            self._write_records(source_name, deduplicated, current_date)
                             records_written = len(deduplicated)
                         else:
                             records_written = 0
 
-                        records_rejected = records_received - len(deduplicated)
+                        # Never negative, even if the source metadata is inconsistent.
+                        records_rejected = max(0, records_received - records_written)
 
-                        # Update aggregate stats
                         aggregate_stats["total_records_received"] += records_received
                         aggregate_stats["total_records_written"] += records_written
                         aggregate_stats["total_records_rejected"] += records_rejected
                         aggregate_stats["days_processed"] += 1
 
                         logger.info(
-                            f"Backfill day {day_date.date()}: "
+                            f"Backfill day {current_date} completed: "
                             f"{records_written} written, {records_rejected} rejected"
                         )
 
-                    except Exception as e:
+                    except Exception as exc:
                         aggregate_stats["days_failed"] += 1
-                        logger.warning(f"Backfill failed for {day_date.date()}: {e}")
-                        continue  # Continue with next day
+                        logger.warning(
+                            f"Backfill failed for {source_name} on {current_date}: {exc}",
+                            exc_info=True,
+                        )
 
-                # Record aggregate backfill run
+                    finally:
+                        # Release the day's objects before moving to the next date.
+                        response = None
+                        parsed_records = None
+                        deduplicated = None
+                        gc.collect()
+
+                    current_date += timedelta(days=1)
+
+                status = "success" if aggregate_stats["days_failed"] == 0 else "partial"
                 self.ingestion_repo.record_run(
                     run_id=run_id,
                     source_id=source_id,
                     started_at=started_at,
                     finished_at=datetime.now(timezone.utc),
-                    status="success" if aggregate_stats["days_failed"] == 0 else "partial",
+                    status=status,
                     records_received=aggregate_stats["total_records_received"],
                     records_written=aggregate_stats["total_records_written"],
                     records_rejected=aggregate_stats["total_records_rejected"],
-                    requested_start=datetime.combine(start_date, datetime.min.time()).replace(
-                        tzinfo=timezone.utc
-                    ),
-                    requested_end=datetime.combine(end_date, datetime.max.time()).replace(
-                        tzinfo=timezone.utc
-                    ),
+                    requested_start=requested_start,
+                    requested_end=requested_end,
                 )
 
-                aggregate_stats["status"] = "success" if aggregate_stats["days_failed"] == 0 else "partial"
-                logger.info(f"Backfill complete: {aggregate_stats['days_processed']} days processed")
+                aggregate_stats["status"] = status
+                logger.info(
+                    f"Backfill completed for {source_name}: "
+                    f"{aggregate_stats['days_processed']} days processed"
+                )
 
             except Exception as e:
                 aggregate_stats["status"] = "failed"
@@ -463,21 +496,11 @@ class IngestionOrchestrator:
             ) from e
 
     def _deduplicate(self, source_name: str, records: List[Dict]) -> List[Dict]:
-        """Deduplicate records using measurement keys.
-
-        Reads existing Parquet data for current date, checks for duplicates.
-
-        Args:
-            source_name: Source identifier.
-            records: Parsed records.
-
-        Returns:
-            Deduplicated records.
-        """
+        """Deduplicate records against both the current batch and persisted data."""
         if not records:
             return records
 
-        # Generate measurement keys
+        # First deduplicate within the incoming batch.
         keys_to_records = {}
         for record in records:
             if source_name == "openaq":
@@ -488,7 +511,7 @@ class IngestionOrchestrator:
                     pollutant=record["pollutant"],
                     observed_at=record["observed_at"],
                 )
-            else:  # open_meteo
+            else:
                 key = generate_weather_key(
                     source=record["source"],
                     location_id=record["location_id"],
@@ -497,14 +520,46 @@ class IngestionOrchestrator:
 
             keys_to_records[key] = record
 
-        # TODO: Check Parquet for existing keys
-        # For now, just deduplicate within this batch
-        deduplicated = list(keys_to_records.values())
+        batch_unique = list(keys_to_records.values())
+        batch_duplicates = len(records) - len(batch_unique)
 
-        if len(deduplicated) < len(records):
+        # Check persisted Parquet data using each record's actual date partition.
+        records_by_date = {}
+        for record in batch_unique:
+            partition_date = ensure_utc(record["observed_at"]).date()
+            records_by_date.setdefault(partition_date, []).append(record)
+
+        deduplicated = []
+
+        for partition_date, partition_records in records_by_date.items():
+            if source_name == "openaq":
+                unique_records, persisted_duplicates = (
+                    self.deduplicator.deduplicate_air_quality(
+                        partition_records, partition_date
+                    )
+                )
+            else:
+                unique_records, persisted_duplicates = (
+                    self.deduplicator.deduplicate_weather(
+                        partition_records, partition_date
+                    )
+                )
+
+            deduplicated.extend(unique_records)
+
+            if persisted_duplicates:
+                logger.info(
+                    f"Deduplication removed {len(persisted_duplicates)} "
+                    f"records already present in Parquet for {partition_date}"
+                )
+
+        total_duplicates = batch_duplicates + (
+            len(batch_unique) - len(deduplicated)
+        )
+
+        if total_duplicates:
             logger.info(
-                f"Deduplication removed {len(records) - len(deduplicated)} "
-                f"duplicate records"
+                f"Deduplication removed {total_duplicates} duplicate records"
             )
 
         return deduplicated

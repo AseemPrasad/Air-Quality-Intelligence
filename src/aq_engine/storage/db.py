@@ -7,7 +7,7 @@ Includes transaction management, connection pooling, and error handling.
 import logging
 from datetime import datetime, timezone
 from typing import Optional, Tuple
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import (
     BigInteger,
@@ -15,12 +15,15 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Integer,
     String,
+    UniqueConstraint,
+    Uuid,
     create_engine,
-    func,
     event,
+    func,
+    text,
 )
-from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 from sqlalchemy.orm import (
     declarative_base,
@@ -28,13 +31,19 @@ from sqlalchemy.orm import (
     sessionmaker,
     Session,
 )
-from sqlalchemy.pool import QueuePool
+from sqlalchemy.engine import make_url
+from sqlalchemy.pool import QueuePool, StaticPool
 import contextlib
 
 from aq_engine.common import ensure_utc, DatabaseError
 
 
 logger = logging.getLogger(__name__)
+
+# Surrogate primary keys. SQLite only auto-increments an ``INTEGER PRIMARY KEY``
+# column, so a plain BIGINT key is never filled in there and every insert fails
+# with ``NOT NULL constraint failed``. PostgreSQL keeps BIGINT.
+PrimaryKeyInteger = BigInteger().with_variant(Integer(), "sqlite")
 
 Base = declarative_base()
 
@@ -49,7 +58,7 @@ class Source(Base):
 
     __tablename__ = "source"
 
-    source_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    source_id = Column(PrimaryKeyInteger, primary_key=True, autoincrement=True)
     source_name = Column(String(255), unique=True, nullable=False)
     source_type = Column(String(50), nullable=False)  # air_quality, weather
     base_url = Column(String(255))
@@ -75,7 +84,7 @@ class Location(Base):
 
     __tablename__ = "location"
 
-    location_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    location_id = Column(PrimaryKeyInteger, primary_key=True, autoincrement=True)
     location_code = Column(String(100), unique=True, nullable=False)
     name = Column(String(255), nullable=False)
     city = Column(String(100), nullable=False)
@@ -105,7 +114,7 @@ class Station(Base):
 
     __tablename__ = "station"
 
-    station_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    station_id = Column(PrimaryKeyInteger, primary_key=True, autoincrement=True)
     source_id = Column(BigInteger, ForeignKey("source.source_id"), nullable=False)
     source_station_id = Column(String(255), nullable=False)
     location_id = Column(BigInteger, ForeignKey("location.location_id"), nullable=False)
@@ -130,7 +139,7 @@ class Station(Base):
     sensors = relationship("Sensor", back_populates="station", cascade="all, delete-orphan")
 
     __table_args__ = (
-        ("unique", "source_id", "source_station_id"),  # Unique per source
+        UniqueConstraint("source_id", "source_station_id"),  # Unique per source
     )
 
     def __repr__(self) -> str:
@@ -142,7 +151,7 @@ class Sensor(Base):
 
     __tablename__ = "sensor"
 
-    sensor_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    sensor_id = Column(PrimaryKeyInteger, primary_key=True, autoincrement=True)
     station_id = Column(BigInteger, ForeignKey("station.station_id"), nullable=False)
     source_sensor_id = Column(String(255), nullable=False)
     pollutant_code = Column(String(50), nullable=False)
@@ -161,7 +170,7 @@ class Sensor(Base):
     station = relationship("Station", back_populates="sensors")
 
     __table_args__ = (
-        ("unique", "station_id", "source_sensor_id", "pollutant_code"),
+        UniqueConstraint("station_id", "source_sensor_id", "pollutant_code"),
     )
 
     def __repr__(self) -> str:
@@ -173,7 +182,7 @@ class IngestionRun(Base):
 
     __tablename__ = "ingestion_run"
 
-    run_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    run_id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     source_id = Column(BigInteger, ForeignKey("source.source_id"), nullable=False)
     started_at = Column(DateTime(timezone=True), nullable=False)
     finished_at = Column(DateTime(timezone=True))
@@ -204,7 +213,7 @@ class QualityRun(Base):
 
     __tablename__ = "quality_run"
 
-    quality_run_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    quality_run_id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     started_at = Column(DateTime(timezone=True), nullable=False)
     finished_at = Column(DateTime(timezone=True))
     input_records = Column(BigInteger)
@@ -229,7 +238,7 @@ class Model(Base):
 
     __tablename__ = "model"
 
-    model_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    model_id = Column(PrimaryKeyInteger, primary_key=True, autoincrement=True)
     model_name = Column(String(255), nullable=False)
     model_type = Column(String(100), nullable=False)  # linear, random_forest, xgboost
     target = Column(String(100), nullable=False)  # pm25_1h, pm25_3h, etc.
@@ -253,7 +262,7 @@ class ModelVersion(Base):
 
     __tablename__ = "model_version"
 
-    model_version_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    model_version_id = Column(PrimaryKeyInteger, primary_key=True, autoincrement=True)
     model_id = Column(BigInteger, ForeignKey("model.model_id"), nullable=False)
     version = Column(String(50), nullable=False)
     feature_version = Column(String(50), nullable=False)
@@ -276,7 +285,7 @@ class ModelVersion(Base):
     predictions = relationship("Prediction", back_populates="model_version")
 
     __table_args__ = (
-        ("unique", "model_id", "version"),
+        UniqueConstraint("model_id", "version"),
     )
 
     def __repr__(self) -> str:
@@ -288,7 +297,7 @@ class Prediction(Base):
 
     __tablename__ = "prediction"
 
-    prediction_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    prediction_id = Column(PrimaryKeyInteger, primary_key=True, autoincrement=True)
     model_version_id = Column(BigInteger, ForeignKey("model_version.model_version_id"))
     location_id = Column(BigInteger, ForeignKey("location.location_id"), nullable=False)
     generated_at = Column(DateTime(timezone=True), nullable=False)
@@ -343,21 +352,39 @@ class Database:
         self.database_url = database_url
         self.echo = echo
 
-        # Create engine with connection pooling
-        self.engine = create_engine(
-            database_url,
-            poolclass=QueuePool,
-            pool_size=5,
-            max_overflow=10,
-            pool_pre_ping=True,  # Health check before each use
-            pool_recycle=3600,  # Recycle connections every hour
-            echo=echo,
-        )
+        url = make_url(database_url)
+        if url.get_backend_name() == "sqlite" and url.database in (None, "", ":memory:"):
+            # Every new SQLite connection to :memory: opens a separate, empty
+            # database, so with a pool the tables created by create_tables() were
+            # missing on the next checkout ("no such table: ingestion_run").
+            # Share one connection instead.
+            self.engine = create_engine(
+                database_url,
+                poolclass=StaticPool,
+                connect_args={"check_same_thread": False},
+                echo=echo,
+            )
+        else:
+            # Create engine with connection pooling
+            self.engine = create_engine(
+                database_url,
+                poolclass=QueuePool,
+                pool_size=5,
+                max_overflow=10,
+                pool_pre_ping=True,  # Health check before each use
+                pool_recycle=3600,  # Recycle connections every hour
+                echo=echo,
+            )
 
         # Create session factory
+        # expire_on_commit=False: the repositories return ORM objects from inside
+        # ``session()``, which commits and closes before the caller sees them. With
+        # the default, every attribute was expired by that commit, and reading one
+        # afterwards raised DetachedInstanceError.
         self.SessionLocal = sessionmaker(
             autocommit=False,
             autoflush=False,
+            expire_on_commit=False,
             bind=self.engine,
         )
 
@@ -403,7 +430,9 @@ class Database:
         """
         try:
             with self.engine.connect() as conn:
-                conn.execute("SELECT 1")
+                # SQLAlchemy 2.x only executes statement objects; a bare string raises
+                # ObjectNotExecutableError, which made this report every database as down.
+                conn.execute(text("SELECT 1"))
             logger.debug("Database health check passed")
             return True
         except Exception as e:
@@ -617,7 +646,7 @@ class IngestionRunRepository:
 
     def record_run(
         self,
-        run_id: str,
+        run_id: str | UUID,
         source_id: int,
         started_at: datetime,
         status: str,
@@ -658,6 +687,10 @@ class IngestionRunRepository:
                 requested_start = ensure_utc(requested_start)
             if requested_end:
                 requested_end = ensure_utc(requested_end)
+
+            # The orchestrator passes ``str(uuid4())``; the column holds UUID objects.
+            if not isinstance(run_id, UUID):
+                run_id = UUID(str(run_id))
 
             with self.db.session() as session:
                 run = IngestionRun(
@@ -721,7 +754,11 @@ class IngestionRunRepository:
                     f"Watermark for source {source_id}: "
                     f"event_time={run.requested_end}, ingestion_time={run.finished_at}"
                 )
-                return run.requested_end, run.finished_at
+                # Some backends (SQLite) return DateTime(timezone=True) values without
+                # tzinfo. The orchestrator uses requested_end as the next query start and
+                # compares it with aware times, which raised TypeError.
+                finished_at = ensure_utc(run.finished_at) if run.finished_at else None
+                return ensure_utc(run.requested_end), finished_at
 
         except DatabaseError:
             raise

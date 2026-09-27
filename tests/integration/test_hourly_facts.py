@@ -102,12 +102,17 @@ class TestDeduplication:
         df = pl.concat([sample_raw_air_quality, sample_raw_air_quality])
 
         # Simulate deduplication (row_number window function)
-        deduped = df.with_columns(
-            rn=pl.int_range(pl.len()).over(
-                ["source", "station_id", "sensor_id", "pollutant", "observed_at"],
-                order_by="ingested_at"
+        # Expr.over() has no order_by in the pinned polars (0.19), so sort first
+        # and number rows within each key in that order.
+        deduped = (
+            df.sort("ingested_at")
+            .with_columns(
+                rn=pl.col("ingested_at")
+                .cumcount()
+                .over(["source", "station_id", "sensor_id", "pollutant", "observed_at"])
             )
-        ).filter(pl.col("rn") == 0)
+            .filter(pl.col("rn") == 0)
+        )
 
         # Should have same number of rows as original (duplicates removed)
         assert len(deduped) == len(sample_raw_air_quality)
@@ -284,7 +289,7 @@ class TestWeatherAggregation:
             pl.col("temperature_c").mean().alias("mean_temp"),
             pl.col("temperature_c").min().alias("min_temp"),
             pl.col("temperature_c").max().alias("max_temp"),
-        )
+        ).sort("hour_start")  # group_by does not preserve order; take the first hour
 
         mean_temp = hourly.select("mean_temp").item(0, 0)
         # First 6 observations: [28.0, 28.5, 29.0, 29.5, 30.0, 30.5] = 29.25

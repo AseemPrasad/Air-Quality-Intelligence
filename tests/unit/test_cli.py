@@ -5,7 +5,7 @@ import json
 from unittest.mock import Mock, patch, MagicMock
 from pathlib import Path
 from typer.testing import CliRunner
-from src.aq_engine.cli import cli_app
+from aq_engine.cli import cli_app
 
 
 runner = CliRunner()
@@ -88,21 +88,21 @@ class TestCLIBasics:
 class TestConfigValidation:
     """Test configuration loading and validation."""
 
-    @patch("src.aq_engine.cli.load_config")
+    @patch("aq_engine.cli.load_config")
     def test_invalid_config_file_not_found(self, mock_load):
         """Test handling of missing config file."""
-        from src.aq_engine.cli import _load_config
+        from aq_engine.cli import _load_config
 
         mock_load.side_effect = FileNotFoundError("Config not found")
 
         with pytest.raises(FileNotFoundError):
             _load_config("./nonexistent")
 
-    @patch("src.aq_engine.cli.load_config")
+    @patch("aq_engine.cli.load_config")
     def test_invalid_config_validation_error(self, mock_load):
         """Test handling of invalid config schema."""
         from pydantic import ValidationError
-        from src.aq_engine.cli import _load_config
+        from aq_engine.cli import _load_config
 
         mock_load.side_effect = ValidationError.from_exception_data(
             "Config",
@@ -114,7 +114,7 @@ class TestConfigValidation:
 
     def test_config_yaml_valid(self, tmp_path):
         """Test loading valid config YAML."""
-        from src.aq_engine.config import ConfigLoader
+        from aq_engine.config import ConfigLoader
 
         # Create minimal valid config
         config_content = """
@@ -168,7 +168,7 @@ analytics:
 
     def test_config_env_override(self, tmp_path, monkeypatch):
         """Test environment variable overrides."""
-        from src.aq_engine.config import ConfigLoader
+        from aq_engine.config import ConfigLoader
 
         config_content = """
 database:
@@ -228,8 +228,8 @@ analytics:
 class TestJSONOutput:
     """Test JSON output format."""
 
-    @patch("src.aq_engine.cli.load_config")
-    @patch("src.aq_engine.cli.DatabaseConnection")
+    @patch("aq_engine.cli.load_config")
+    @patch("aq_engine.cli.DatabaseConnection")
     def test_health_json_output(self, mock_db, mock_load):
         """Test health command returns valid JSON."""
         mock_config = MagicMock()
@@ -247,7 +247,7 @@ class TestJSONOutput:
 
     def test_json_output_structure(self):
         """Test JSON output has required fields."""
-        from src.aq_engine.cli import _print_json_result
+        from aq_engine.cli import _print_json_result
         import io
         import sys
 
@@ -262,10 +262,10 @@ class TestJSONOutput:
 class TestCommandExecution:
     """Test command execution with mocks."""
 
-    @patch("src.aq_engine.cli.load_config")
-    @patch("src.aq_engine.cli.DatabaseConnection")
-    @patch("src.aq_engine.cli.ParquetStorage")
-    @patch("src.aq_engine.cli.OpenAQConnector")
+    @patch("aq_engine.cli.load_config")
+    @patch("aq_engine.cli.DatabaseConnection")
+    @patch("aq_engine.cli.ParquetStorage")
+    @patch("aq_engine.cli.OpenAQConnector")
     def test_ingest_command_with_mocks(
         self, mock_connector, mock_storage, mock_db, mock_load
     ):
@@ -305,7 +305,7 @@ class TestCommandExecution:
         # Verify JSON output is attempted
         assert "status" in result.stdout.lower() or "error" in result.stdout.lower()
 
-    @patch("src.aq_engine.cli.load_config")
+    @patch("aq_engine.cli.load_config")
     def test_ingest_invalid_source(self, mock_load):
         """Test ingest with invalid source."""
         mock_config = MagicMock()
@@ -321,8 +321,8 @@ class TestCommandExecution:
         assert result.exit_code == 1
         assert "error" in result.stdout.lower() or "unknown" in result.stdout.lower()
 
-    @patch("src.aq_engine.cli.load_config")
-    @patch("src.aq_engine.cli.DatabaseConnection")
+    @patch("aq_engine.cli.load_config")
+    @patch("aq_engine.cli.DatabaseConnection")
     def test_health_command(self, mock_db, mock_load):
         """Test health command."""
         mock_config = MagicMock()
@@ -353,7 +353,7 @@ class TestLoggingConfiguration:
         config_path = Path("./configs/default.yaml")
         assert config_path.exists(), "default.yaml should exist in configs/"
 
-    @patch("src.aq_engine.cli._setup_logging")
+    @patch("aq_engine.cli._setup_logging")
     def test_setup_logging_called(self, mock_setup):
         """Test that logging setup is called."""
         # This would be tested in actual command execution
@@ -363,13 +363,13 @@ class TestLoggingConfiguration:
 class TestErrorHandling:
     """Test error handling."""
 
-    @patch("src.aq_engine.cli.load_config")
+    @patch("aq_engine.cli.load_config")
     def test_missing_required_option(self, mock_load):
         """Test missing required option."""
         result = runner.invoke(cli_app, ["ingest"])
         assert result.exit_code != 0
 
-    @patch("src.aq_engine.cli.load_config")
+    @patch("aq_engine.cli.load_config")
     def test_invalid_date_format(self, mock_load):
         """Test invalid date format handling."""
         mock_config = MagicMock()
@@ -387,14 +387,14 @@ class TestErrorHandling:
 class TestExitCodes:
     """Test exit code behavior."""
 
-    @patch("src.aq_engine.cli.load_config")
+    @patch("aq_engine.cli.load_config")
     def test_success_exit_code_zero(self, mock_load):
         """Test that successful commands return exit code 0."""
         # This would need actual working components
         # For now, verify the structure exists
         assert callable(cli_app)
 
-    @patch("src.aq_engine.cli.load_config")
+    @patch("aq_engine.cli.load_config")
     def test_error_exit_code_one(self, mock_load):
         """Test that errors return exit code 1."""
         mock_config = MagicMock()

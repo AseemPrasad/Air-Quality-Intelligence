@@ -4,14 +4,20 @@ Tests API integration, pagination, unit conversion, retry logic, and watermark h
 Uses mocked HTTP responses to avoid external API calls.
 """
 
-import pytest
-from datetime import datetime, timezone, timedelta
-from unittest.mock import Mock, patch, MagicMock
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import MagicMock, Mock, patch
 
+import pytest
+import requests
+
+from aq_engine.common import DataContractViolation, IngestionFailed
+from aq_engine.connectors.models import (
+    ConnectorConfig,
+    IngestionRunMetadata,
+    SourceResponse,
+)
 from aq_engine.connectors.openaq import OpenAQConnector
-from aq_engine.connectors.models import ConnectorConfig, SourceResponse, IngestionRunMetadata
-from aq_engine.common import IngestionFailed, DataContractViolation
 
 
 @pytest.fixture
@@ -37,7 +43,6 @@ class TestFetchMeasurements:
 
     def test_fetch_single_page(self, connector):
         """Test fetching measurements with single page."""
-        # Mock response
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.json.return_value = {
@@ -64,12 +69,10 @@ class TestFetchMeasurements:
         mock_response.raise_for_status = Mock()
         connector._session.get = Mock(return_value=mock_response)
 
-        # Fetch
         start_time = datetime(2026, 8, 15, tzinfo=timezone.utc)
         end_time = datetime(2026, 8, 16, tzinfo=timezone.utc)
         response = connector.fetch(start_time, end_time)
 
-        # Verify
         assert response.status_code == 200
         assert len(response.body["results"]) == 2
         assert response.body["results"][0]["value"] == 45.5
@@ -77,7 +80,6 @@ class TestFetchMeasurements:
 
     def test_fetch_pagination_multiple_pages(self, connector):
         """Test fetching measurements across multiple pages."""
-        # Mock two pages of responses
         page1_response = Mock()
         page1_response.status_code = 200
         page1_response.json.return_value = {
@@ -114,19 +116,16 @@ class TestFetchMeasurements:
 
         connector._session.get = Mock(side_effect=[page1_response, page2_response])
 
-        # Fetch
         start_time = datetime(2026, 8, 15, tzinfo=timezone.utc)
         end_time = datetime(2026, 8, 16, tzinfo=timezone.utc)
         response = connector.fetch(start_time, end_time)
 
-        # Verify
         assert response.status_code == 200
         assert len(response.body["results"]) == 2
         assert connector._session.get.call_count == 2
 
     def test_fetch_large_dataset_1000_records(self, connector):
         """Test fetching 1000+ records across pagination."""
-        # Simulate 2 pages: 600 + 400 records
         records_page1 = [
             {
                 "location": {"id": i},
@@ -169,13 +168,29 @@ class TestFetchMeasurements:
 
         connector._session.get = Mock(side_effect=[page1_response, page2_response])
 
-        # Fetch
         start_time = datetime(2026, 8, 15, tzinfo=timezone.utc)
         end_time = datetime(2026, 8, 17, tzinfo=timezone.utc)
         response = connector.fetch(start_time, end_time)
 
-        # Verify
         assert len(response.body["results"]) == 1000
+
+    def test_fetch_empty_results(self, connector):
+        """Test fetching when API returns empty results array."""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "results": [],
+            "meta": {"next": {"cursor": None}},
+        }
+        mock_response.raise_for_status = Mock()
+        connector._session.get = Mock(return_value=mock_response)
+
+        start_time = datetime(2026, 8, 15, tzinfo=timezone.utc)
+        end_time = datetime(2026, 8, 16, tzinfo=timezone.utc)
+        response = connector.fetch(start_time, end_time)
+
+        assert response.status_code == 200
+        assert len(response.body["results"]) == 0
 
 
 class TestParsing:
@@ -293,6 +308,30 @@ class TestParsing:
         with pytest.raises(DataContractViolation):
             connector.parse(response, None, None)
 
+    def test_parse_invalid_date_format_skips_record(self, connector):
+        """Test that records with invalid date strings are gracefully skipped."""
+        response = SourceResponse(
+            status_code=200,
+            headers={},
+            body={
+                "results": [
+                    {
+                        "location": {"id": 123},
+                        "sensor": {"id": 456},
+                        "parameter": {"id": "pm25"},
+                        "value": 45.5,
+                        "unit": "µg/m³",
+                        "date": {"utc": "invalid-date-string"},
+                    }
+                ]
+            },
+            elapsed_seconds=1.0,
+            timestamp=datetime.now(timezone.utc),
+        )
+
+        records = connector.parse(response, None, None)
+        assert len(records) == 0
+
 
 class TestUnitConversion:
     """Test unit normalization to µg/m³."""
@@ -330,7 +369,7 @@ class TestErrorHandling:
         mock_response = Mock()
         mock_response.status_code = 401
         mock_response.text = "Unauthorized"
-        mock_response.raise_for_status.side_effect = Exception("401 Client Error")
+        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError("401 Client Error")
         connector._session.get = Mock(return_value=mock_response)
 
         with pytest.raises(IngestionFailed, match="Authentication failed"):
@@ -344,7 +383,7 @@ class TestErrorHandling:
         mock_response = Mock()
         mock_response.status_code = 403
         mock_response.text = "Forbidden"
-        mock_response.raise_for_status.side_effect = Exception("403 Client Error")
+        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError("403 Client Error")
         connector._session.get = Mock(return_value=mock_response)
 
         with pytest.raises(IngestionFailed, match="Access forbidden"):
@@ -358,22 +397,21 @@ class TestErrorHandling:
         mock_response = Mock()
         mock_response.status_code = 404
         mock_response.text = "Not Found"
-        mock_response.raise_for_status.side_effect = Exception("404 Client Error")
+        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError("404 Client Error")
         connector._session.get = Mock(return_value=mock_response)
 
-        # Should continue with empty results (no exception)
         response = connector.fetch(
             datetime(2026, 8, 15, tzinfo=timezone.utc),
             datetime(2026, 8, 16, tzinfo=timezone.utc),
         )
-        assert response.status_code == 200  # Synthesized empty response
+        assert response.status_code == 200
 
     def test_handle_429_rate_limit_error(self, connector):
         """Test 429 Too Many Requests triggers retry."""
         mock_response = Mock()
         mock_response.status_code = 429
         mock_response.text = "Rate limit exceeded"
-        mock_response.raise_for_status.side_effect = Exception("429 Client Error")
+        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError("429 Client Error")
         connector._session.get = Mock(return_value=mock_response)
 
         with pytest.raises(IngestionFailed, match="Transient error"):
@@ -387,7 +425,7 @@ class TestErrorHandling:
         mock_response = Mock()
         mock_response.status_code = 500
         mock_response.text = "Internal Server Error"
-        mock_response.raise_for_status.side_effect = Exception("500 Server Error")
+        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError("500 Server Error")
         connector._session.get = Mock(return_value=mock_response)
 
         with pytest.raises(IngestionFailed, match="Transient error"):
@@ -398,8 +436,6 @@ class TestErrorHandling:
 
     def test_handle_timeout(self, connector):
         """Test timeout triggers retry."""
-        import requests
-
         connector._session.get = Mock(side_effect=requests.Timeout("Connection timeout"))
 
         with pytest.raises(IngestionFailed, match="Timeout"):
@@ -495,7 +531,6 @@ class TestIdempotency:
         records1 = connector.parse(response1, None, None)
         records2 = connector.parse(response2, None, None)
 
-        # Different timestamps → different keys (even if same station/sensor)
         assert records1[0].measurement_key != records2[0].measurement_key
 
 
@@ -515,7 +550,6 @@ class TestRecordRun:
             records_rejected=5,
         )
 
-        # Should not raise
         connector.record_run(metadata, success=True)
 
     def test_record_run_failure_does_not_advance_watermark(self, connector):
@@ -532,7 +566,6 @@ class TestRecordRun:
             error_message="API error",
         )
 
-        # Should log warning
         with patch("aq_engine.connectors.openaq.logger") as mock_logger:
             connector.record_run(metadata, success=False)
             mock_logger.warning.assert_called()

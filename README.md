@@ -313,6 +313,12 @@ Comprehensive documentation is in `docs/`:
   - `001-postgresql-parquet-choice.md` — Why dual storage (transactional DB + columnar files)
   - `004-anomaly-detection-mad.md` — Why Median Absolute Deviation (robust to outliers)
 
+ ### Project Tracking & Deliverables
+
+To maintain a clean root directory, all phase summaries, implementation reports, and deliverable checklists have been migrated to the project tracking directory:
+- [Phase Summaries & Implementation Details](docs/project_tracking/)
+- [Docker & CI/CD Deliverables](docs/project_tracking/)
+
 ## Milestones
 
 - **M0**: Foundation (repo, environment, config, logging)

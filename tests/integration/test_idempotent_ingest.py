@@ -21,7 +21,7 @@ class TestIdempotentIngestion:
                     "pollutant": "PM2.5",
                     "value": 60.0 + (i % 20),
                     "observed_at": f"2026-08-15T{(10 + i // 100) % 24:02d}:00:00Z",
-                    "measurement_key": f"key_{i % 100}",
+                    "measurement_key": f"key_{i}",
                 })
             return records
 

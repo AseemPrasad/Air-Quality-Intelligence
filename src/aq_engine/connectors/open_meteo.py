@@ -168,10 +168,14 @@ class OpenMeteoConnector(BaseConnector):
                 logger.warning(f"Failed to fetch weather for station {station_id}: {e}")
                 # Continue with other locations
                 continue
-
         if not all_weather_data:
-            logger.warning("No weather data fetched from any location")
-
+            raise IngestionFailed(
+                "No weather data fetched from any location",
+                context={
+                    "source": self.config.source_name,
+                    "locations": len(self._location_mapping),
+                },
+            )
         # Return aggregated response
         response = SourceResponse(
             status_code=200,
@@ -313,6 +317,14 @@ class OpenMeteoConnector(BaseConnector):
         except requests.Timeout as e:
             raise IngestionFailed(
                 f"Timeout fetching weather for station {station_id}",
+                context={"url": url, "station_id": station_id},
+            ) from e
+
+        except requests.RequestException as e:
+            # Connection refused, DNS failure, TLS error, ... Previously these escaped
+            # unwrapped and aborted the fetch for every remaining station.
+            raise IngestionFailed(
+                f"Request failed for station {station_id}: {e}",
                 context={"url": url, "station_id": station_id},
             ) from e
 

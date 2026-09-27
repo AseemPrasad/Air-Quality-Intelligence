@@ -383,3 +383,225 @@ class TestLateArrivalIntegration:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def _write_aq_parquet(partition_path: Path, records: list) -> None:
+    """Write AQ records directly as a Parquet file using Polars.
+
+    Bypasses ParquetWriter so tests are independent of the date_partition_path
+    bug fixed in PR #1.  Writes only the columns that _get_existing_aq_keys
+    needs to recompute measurement keys.
+    """
+    import polars as pl
+
+    partition_path.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {
+            "source": r["source"],
+            "station_id": r["station_id"],
+            "sensor_id": r["sensor_id"],
+            "pollutant": r["pollutant"],
+            "observed_at": r["observed_at"],
+        }
+        for r in records
+    ]
+    df = pl.DataFrame(rows)
+    df.write_parquet(str(partition_path / "data.parquet"))
+
+
+def _write_weather_parquet(partition_path: Path, records: list) -> None:
+    """Write weather records directly as a Parquet file using Polars.
+
+    Bypasses ParquetWriter so tests are independent of the date_partition_path
+    bug fixed in PR #1.  Writes only the columns that _get_existing_weather_keys
+    needs to recompute weather keys.
+    """
+    import polars as pl
+
+    partition_path.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {
+            "source": r["source"],
+            "location_id": r["location_id"],
+            "observed_at": r["observed_at"],
+        }
+        for r in records
+    ]
+    df = pl.DataFrame(rows)
+    df.write_parquet(str(partition_path / "data.parquet"))
+
+
+class TestExistingKeyLoading:
+    """Regression tests for _get_existing_aq_keys / _get_existing_weather_keys.
+
+    Prior to the fix, both methods discovered Parquet files in the partition
+    directory but always returned an empty set instead of reading them.
+    This meant that re-ingesting the same records was never detected as a
+    duplicate — every record appeared new.
+
+    These tests write Parquet files directly with Polars (bypassing
+    ParquetWriter) so they remain independent of the date_partition_path
+    bug addressed in PR #1.
+    """
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _aq_partition_path(self, storage_root: Path, d: date) -> Path:
+        return (
+            storage_root
+            / "openaq"
+            / f"year={d.year}"
+            / f"month={d.month:02d}"
+            / f"day={d.day:02d}"
+        )
+
+    def _weather_partition_path(self, storage_root: Path, d: date) -> Path:
+        return (
+            storage_root
+            / "weather"
+            / f"year={d.year}"
+            / f"month={d.month:02d}"
+            / f"day={d.day:02d}"
+        )
+
+    # ------------------------------------------------------------------
+    # Air-quality key loading
+    # ------------------------------------------------------------------
+
+    def test_existing_aq_keys_loaded_from_parquet(
+        self, deduplicator, temp_storage, sample_aq_records
+    ):
+        """Keys written in a previous run are loaded from the Parquet partition."""
+        partition_date = date(2026, 8, 15)
+        partition_path = self._aq_partition_path(temp_storage, partition_date)
+        _write_aq_parquet(partition_path, sample_aq_records)
+
+        # Must return a non-empty set now that files exist on disk
+        keys = deduplicator._get_existing_aq_keys(partition_date)
+
+        assert len(keys) == len(sample_aq_records)
+        assert all(isinstance(k, str) and len(k) == 64 for k in keys)
+
+    def test_existing_aq_key_matches_incoming_key(
+        self, deduplicator, temp_storage, sample_aq_records
+    ):
+        """Key recomputed from Parquet matches key computed from the original record."""
+        from aq_engine.quality.hashing import generate_measurement_key
+
+        partition_date = date(2026, 8, 15)
+        partition_path = self._aq_partition_path(temp_storage, partition_date)
+        _write_aq_parquet(partition_path, sample_aq_records)
+
+        existing_keys = deduplicator._get_existing_aq_keys(partition_date)
+
+        for record in sample_aq_records:
+            expected_key = generate_measurement_key(
+                source=record["source"],
+                station_id=record["station_id"],
+                sensor_id=record["sensor_id"],
+                pollutant=record["pollutant"],
+                observed_at=record["observed_at"],
+            )
+            assert expected_key in existing_keys
+
+    def test_duplicate_aq_records_detected_after_first_write(
+        self, deduplicator, temp_storage, sample_aq_records
+    ):
+        """Re-submitting already-written records is detected as duplicates."""
+        partition_date = date(2026, 8, 15)
+        partition_path = self._aq_partition_path(temp_storage, partition_date)
+        _write_aq_parquet(partition_path, sample_aq_records)
+
+        # Second ingestion of the same records — all must be flagged as dups
+        unique, dups = deduplicator.deduplicate_air_quality(
+            sample_aq_records, partition_date
+        )
+
+        assert len(dups) == len(sample_aq_records)
+        assert len(unique) == 0
+
+    def test_new_aq_records_not_rejected_when_partition_exists(
+        self, deduplicator, temp_storage, sample_aq_records
+    ):
+        """A genuinely new record is not incorrectly flagged as a duplicate."""
+        partition_date = date(2026, 8, 15)
+        partition_path = self._aq_partition_path(temp_storage, partition_date)
+        _write_aq_parquet(partition_path, sample_aq_records)
+
+        # Build a new record with a different station/timestamp — must be unique
+        new_record = {
+            "source": "openaq",
+            "station_id": "999",
+            "sensor_id": "999",
+            "pollutant": "pm25",
+            "value": 33.0,
+            "unit": "µg/m³",
+            "observed_at": datetime(2026, 8, 15, 23, 0, 0, tzinfo=timezone.utc),
+            "ingested_at": datetime.now(timezone.utc),
+            "raw_payload_hash": "newrecord",
+        }
+
+        unique, dups = deduplicator.deduplicate_air_quality(
+            [new_record], partition_date
+        )
+
+        assert len(unique) == 1
+        assert len(dups) == 0
+
+    # ------------------------------------------------------------------
+    # Weather key loading
+    # ------------------------------------------------------------------
+
+    def test_existing_weather_keys_loaded_from_parquet(
+        self, deduplicator, temp_storage, sample_weather_records
+    ):
+        """Weather keys written in a previous run are loaded from the partition."""
+        partition_date = date(2026, 8, 15)
+        partition_path = self._weather_partition_path(temp_storage, partition_date)
+        _write_weather_parquet(partition_path, sample_weather_records)
+
+        keys = deduplicator._get_existing_weather_keys(partition_date)
+
+        assert len(keys) == len(sample_weather_records)
+        assert all(isinstance(k, str) and len(k) == 64 for k in keys)
+
+    def test_duplicate_weather_records_detected_after_first_write(
+        self, deduplicator, temp_storage, sample_weather_records
+    ):
+        """Re-submitting already-written weather records is detected as duplicates."""
+        partition_date = date(2026, 8, 15)
+        partition_path = self._weather_partition_path(temp_storage, partition_date)
+        _write_weather_parquet(partition_path, sample_weather_records)
+
+        unique, dups = deduplicator.deduplicate_weather(
+            sample_weather_records, partition_date
+        )
+
+        assert len(dups) == len(sample_weather_records)
+        assert len(unique) == 0
+
+    # ------------------------------------------------------------------
+    # Edge cases — empty / missing partitions (pre-existing behaviour)
+    # ------------------------------------------------------------------
+
+    def test_no_partition_dir_returns_empty_set(self, deduplicator):
+        """Missing partition directory returns empty set without error."""
+        keys = deduplicator._get_existing_aq_keys(date(2020, 1, 1))
+        assert keys == set()
+
+    def test_empty_partition_dir_returns_empty_set(self, deduplicator, temp_storage):
+        """Existing but empty partition directory returns empty set."""
+        empty_dir = (
+            temp_storage / "openaq" / "year=2026" / "month=01" / "day=01"
+        )
+        empty_dir.mkdir(parents=True)
+
+        keys = deduplicator._get_existing_aq_keys(date(2026, 1, 1))
+        assert keys == set()
+
+    def test_no_weather_partition_returns_empty_set(self, deduplicator):
+        """Missing weather partition directory returns empty set without error."""
+        keys = deduplicator._get_existing_weather_keys(date(2020, 1, 1))
+        assert keys == set()

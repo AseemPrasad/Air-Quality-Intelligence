@@ -1,4 +1,4 @@
-.PHONY: help build up down logs clean restart test lint format install-dev
+.PHONY: help build up down logs clean clean-cache restart test lint format install-dev check
 
 # Colors for output
 BLUE := \033[0;34m
@@ -124,3 +124,12 @@ health: ## Check health of all services
 
 version: ## Show project version
 	@python -c "from aq_engine import __version__; print(__version__)"
+	check: format-check lint test ## Run formatting check, linters, and tests sequentially (CI/CD pre-push)
+
+clean-cache: ## Remove Python cache directories and build artifacts
+	@echo "$(BLUE)Cleaning Python cache and artifacts...$(NC)"
+	find . -type d -name "__pycache__" -exec rm -rf {} +
+	find . -type d -name ".pytest_cache" -exec rm -rf {} +
+	find . -type d -name ".ruff_cache" -exec rm -rf {} +
+	find . -type d -name ".mypy_cache" -exec rm -rf {} +
+	@echo "$(GREEN)✓ Cache cleaned$(NC)"
