@@ -56,7 +56,7 @@ class TestIngestionPerformance:
 
         # Throughput calculation
         # benchmark.stats provides timing info
-        duration_seconds = benchmark.stats.mean  # Average duration
+        duration_seconds = benchmark.stats["mean"]  # Average duration
         throughput = 10000 / duration_seconds if duration_seconds > 0 else 0
 
         print(f"OpenAQ Ingestion: {throughput:.0f} records/sec, {memory_peak:.1f}MB peak")
@@ -97,7 +97,7 @@ class TestIngestionPerformance:
         assert result == 5000
         assert memory_peak < 300  # Memory < 300MB for weather
 
-        duration_seconds = benchmark.stats.mean
+        duration_seconds = benchmark.stats["mean"]
         throughput = 5000 / duration_seconds if duration_seconds > 0 else 0
 
         print(f"Weather Ingestion: {throughput:.0f} records/sec, {memory_peak:.1f}MB peak")

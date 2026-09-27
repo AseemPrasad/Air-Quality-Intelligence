@@ -518,9 +518,9 @@ class TestIdempotency:
                         "location": {"id": 123},
                         "sensor": {"id": 456},
                         "parameter": {"id": "pm25"},
-                        "value": 50.0,  # Different value
+                        "value": 50.0,
                         "unit": "µg/m³",
-                        "date": {"utc": "2026-08-15T12:00:00Z"},
+                        "date": {"utc": "2026-08-15T13:00:00Z"},
                     }
                 ]
             },
