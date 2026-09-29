@@ -3,16 +3,94 @@
 Classifies observations based on age relative to current time:
 - Within lookback (6h): Mark affected hourly partitions for recomputation
 - Beyond lookback (>6h): Treat as historical/backfill data
+
+Fix (Issue #15): All latency calculations now use strictly UTC-aware datetime
+objects via ``ensure_utc()``.  Previously, mixing naive datetimes with
+aware ones raised ``TypeError: can't compare offset-naive and offset-aware
+datetimes``, and stripping timezone info via ``.replace(tzinfo=None)``
+produced silent latency skew on non-UTC hosts.
 """
 
 import logging
 from datetime import datetime, timedelta, timezone, date
-from typing import List, Dict, Tuple, Any
+from typing import List, Dict, Tuple, Any, Optional
 from enum import Enum
 
 from aq_engine.common import ensure_utc, round_to_hour
 
 logger = logging.getLogger(__name__)
+
+
+def is_late_arrival(record_time: datetime, max_delay_hours: int = 3) -> bool:
+    """Return True if *record_time* is older than *max_delay_hours* ago.
+
+    The comparison is always performed in UTC so that the result is the same
+    regardless of the host's local timezone setting.
+
+    If *record_time* carries no ``tzinfo`` it is assumed to represent UTC (the
+    same assumption used throughout the ingestion pipeline).
+
+    Args:
+        record_time: Observation timestamp (naive or timezone-aware).
+        max_delay_hours: Delay threshold in hours (default 3).
+
+    Returns:
+        True if the record is a late arrival, False otherwise.
+
+    Raises:
+        TypeError: If *record_time* is not a :class:`datetime` object.
+
+    Example:
+        >>> from datetime import datetime, timezone, timedelta
+        >>> recent = datetime.now(timezone.utc) - timedelta(hours=1)
+        >>> is_late_arrival(recent, max_delay_hours=3)
+        False
+        >>> old = datetime.now(timezone.utc) - timedelta(hours=5)
+        >>> is_late_arrival(old, max_delay_hours=3)
+        True
+    """
+    record_time_utc = ensure_utc(record_time)
+    now_utc = datetime.now(timezone.utc)
+    return (now_utc - record_time_utc).total_seconds() > (max_delay_hours * 3600)
+
+
+def evaluate_record_delay(
+    record_time: datetime,
+    reference_time: Optional[datetime] = None,
+) -> timedelta:
+    """Return the delay between *record_time* and *reference_time*.
+
+    Both timestamps are normalised to UTC before subtraction so that the
+    calculation is correct even when the host is in a non-UTC timezone or
+    when one timestamp carries explicit offset information and the other does
+    not.
+
+    Args:
+        record_time: Observation timestamp (naive or timezone-aware).
+        reference_time: Reference "now" for comparison.  Defaults to the
+            actual current UTC time when *None* is supplied.
+
+    Returns:
+        A :class:`timedelta` representing how old the record is relative to
+        *reference_time*.  Negative values indicate a future-dated record.
+
+    Raises:
+        TypeError: If either argument is not a :class:`datetime` object.
+
+    Example:
+        >>> from datetime import datetime, timezone, timedelta
+        >>> ref = datetime(2026, 3, 12, 15, 0, 0, tzinfo=timezone.utc)
+        >>> rec = datetime(2026, 3, 12, 12, 0, 0, tzinfo=timezone.utc)
+        >>> evaluate_record_delay(rec, reference_time=ref)
+        datetime.timedelta(seconds=10800)
+    """
+    record_time_utc = ensure_utc(record_time)
+    if reference_time is None:
+        ref_utc = datetime.now(timezone.utc)
+    else:
+        ref_utc = ensure_utc(reference_time)
+
+    return ref_utc - record_time_utc
 
 
 class LateArrivalClassification(str, Enum):
