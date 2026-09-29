@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from fastapi import APIRouter, Query, HTTPException, status
 
 logger = logging.getLogger(__name__)
-
+MAX_EVENT_RANGE = timedelta(days=90)
 
 def _as_utc(value: datetime) -> datetime:
     """Treat a query timestamp without an offset as UTC.
@@ -637,7 +637,15 @@ async def get_events(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="End date must be after start date",
         )
-
+         if end_date - start_date > MAX_EVENT_RANGE:
+        logger.warning(
+            f"Event date range exceeds maximum: "
+            f"{start_date} to {end_date}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Event date range cannot exceed 90 days",
+        )
     # Mock events
     events = []
     if start_date <= datetime(2026, 8, 15, tzinfo=timezone.utc) <= end_date:
