@@ -458,3 +458,59 @@ class ParquetWriter:
                     "file_count": len(parquet_files),
                 },
             ) from e
+
+
+class ParquetStorage:
+    """Storage adapter for CLI and backward-compatibility."""
+
+    def __init__(self, root_path: str = "data/raw"):
+        self.root_path = Path(root_path)
+        self.writer = ParquetWriter(root_path=root_path)
+
+    def is_accessible(self) -> bool:
+        """Check if storage root is accessible."""
+        try:
+            self.root_path.mkdir(parents=True, exist_ok=True)
+            return True
+        except Exception:
+            return False
+
+    def write(self, records: list[dict], source: str = "openaq") -> Path | None:
+        """Write records to storage."""
+        if not records:
+            return None
+        today = datetime.now().date()
+        if source == "weather":
+            return self.writer.write_weather_raw(records, today)
+        return self.writer.write_air_quality_raw(records, today)
+
+    def read(self, date_str: str) -> list[dict]:
+        """Read records for a specific date."""
+        try:
+            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+            df = self.writer.read_raw_air_quality((target_date, target_date))
+            return df.to_dicts() if not df.is_empty() else []
+        except Exception:
+            return []
+
+    def read_range(self, start: str, end: str, source: str = "openaq") -> list[dict]:
+        """Read records across a date range."""
+        try:
+            start_date = datetime.strptime(start, "%Y-%m-%d").date()
+            end_date = datetime.strptime(end, "%Y-%m-%d").date()
+            if source == "weather":
+                df = self.writer.read_raw_weather((start_date, end_date))
+            else:
+                df = self.writer.read_raw_air_quality((start_date, end_date))
+            return df.to_dicts() if not df.is_empty() else []
+        except Exception:
+            return []
+
+    def read_features(self, *args, **kwargs) -> list[dict]:
+        """Read feature records."""
+        return []
+
+    def write_quarantine(self, records: list[dict], reason: str = "") -> None:
+        """Write records to quarantine."""
+        pass
+

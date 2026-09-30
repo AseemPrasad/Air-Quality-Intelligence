@@ -1,4 +1,11 @@
-.venv/*.egg-info/
+.venv/
+*.egg-info/
 .env
 __pycache__/
 *.egg-info/
+.coverage
+.coverage.*
+coverage.xml
+.benchmarks/
+data/
+

@@ -68,6 +68,7 @@ dev = [
     "httpx==0.26.0",
     # Used by tests/performance to measure memory.
     "psutil==5.9.8",
+    "pytest-benchmark==4.0.0",
     "ruff==0.1.6",
     "mypy==1.7.1",
     "black==23.12.0",

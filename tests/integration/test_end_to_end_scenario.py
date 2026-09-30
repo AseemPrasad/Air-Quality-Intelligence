@@ -26,7 +26,7 @@ def mock_openaq_api():
                     "parameter": "PM2.5",
                     "value": 65.5 + i,
                     "unit": "µg/m³",
-                    "date": {"utc": f"2026-08-15T{10+i%24:02d}:00:00Z"},
+                    "date": {"utc": (datetime(2026, 8, 15, 0, 0) + timedelta(minutes=10 * i)).strftime("%Y-%m-%dT%H:%M:%SZ")},
                     "sourceName": "OpenAQ",
                 }
                 for i in range(100)

@@ -66,11 +66,17 @@ open_meteo:
 @pytest.fixture
 def orchestrator(temp_config_dir, temp_storage, temp_db):
     """IngestionOrchestrator with test configuration."""
-    return IngestionOrchestrator(
+    from aq_engine.storage.db import Source
+    orch = IngestionOrchestrator(
         config_dir=str(temp_config_dir),
         storage_root=str(temp_storage),
         db_url=temp_db,
     )
+    orch.db.create_tables()
+    with orch.db.session() as session:
+        session.add(Source(source_id=1, source_name="openaq", source_type="air_quality"))
+        session.add(Source(source_id=2, source_name="open_meteo", source_type="weather"))
+    return orch
 
 
 class TestIngestionWorkflow:

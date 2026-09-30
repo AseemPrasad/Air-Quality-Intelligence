@@ -42,6 +42,7 @@ class HealthStatus:
 health_status = HealthStatus()
 
 
+@asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application startup and shutdown."""
     # Startup

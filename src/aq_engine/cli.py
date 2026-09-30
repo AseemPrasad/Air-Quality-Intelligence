@@ -17,6 +17,8 @@ from aq_engine.analytics.aggregation import LocationAggregator
 from aq_engine.analytics.anomaly import AnomalyDetector
 from aq_engine.analytics.events import EventDetector
 from aq_engine.common.logger import get_logger
+from aq_engine.storage import DatabaseConnection, ParquetStorage
+
 
 # Initialize CLI
 cli_app = typer.Typer(
@@ -39,11 +41,17 @@ def _setup_logging(log_level: str, config_dir: str) -> None:
     logging_config = LoggingConfig(Path(config_dir) / "logging.yaml")
     config = logging_config.load()
 
+    # Ensure directories exist for any file handlers
+    for handler in config.get("handlers", {}).values():
+        if isinstance(handler, dict) and "filename" in handler:
+            Path(handler["filename"]).parent.mkdir(parents=True, exist_ok=True)
+
     # Override log level if specified
     if log_level:
         config["root"]["level"] = log_level.upper()
 
     logging.config.dictConfig(config)
+
 
 
 def _load_config(config_dir: str) -> dict:
@@ -85,6 +93,8 @@ def _print_json_result(status: str, data: dict, exit_code: int = 0) -> int:
         **data
     }
     console.print_json(json.dumps(result))
+    if exit_code != 0:
+        raise typer.Exit(code=exit_code)
     return exit_code
 
 

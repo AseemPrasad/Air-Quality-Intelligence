@@ -427,7 +427,7 @@ async def get_history(
     start_date: datetime = Query(..., description="Start date (ISO 8601)"),
     end_date: datetime = Query(..., description="End date (ISO 8601)"),
     pollutant: str = Query("PM2.5", description="Pollutant name"),
-    grain: str = Query("hourly", regex="^(hourly|daily)$", description="Time grain"),
+    grain: str = Query("hourly", pattern="^(hourly|daily)$", description="Time grain"),
 ) -> HistoryResponse:
     """Get historical observations for a location.
 

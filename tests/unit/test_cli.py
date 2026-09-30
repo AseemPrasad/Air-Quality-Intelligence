@@ -91,26 +91,27 @@ class TestConfigValidation:
     @patch("aq_engine.cli.load_config")
     def test_invalid_config_file_not_found(self, mock_load):
         """Test handling of missing config file."""
+        import typer
         from aq_engine.cli import _load_config
 
         mock_load.side_effect = FileNotFoundError("Config not found")
 
-        with pytest.raises(FileNotFoundError):
+        with pytest.raises(typer.Exit) as exc_info:
             _load_config("./nonexistent")
+        assert exc_info.value.exit_code == 1
 
     @patch("aq_engine.cli.load_config")
     def test_invalid_config_validation_error(self, mock_load):
         """Test handling of invalid config schema."""
-        from pydantic import ValidationError
+        import typer
         from aq_engine.cli import _load_config
 
-        mock_load.side_effect = ValidationError.from_exception_data(
-            "Config",
-            [{"type": "value_error", "loc": ("database", "port")}]
-        )
+        mock_load.side_effect = ValueError("Invalid configuration schema")
 
-        with pytest.raises(ValidationError):
+        with pytest.raises(typer.Exit) as exc_info:
             _load_config("./configs")
+        assert exc_info.value.exit_code == 1
+
 
     def test_config_yaml_valid(self, tmp_path):
         """Test loading valid config YAML."""

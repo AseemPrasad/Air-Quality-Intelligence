@@ -17,6 +17,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    TypeDecorator,
     UniqueConstraint,
     Uuid,
     create_engine,
@@ -39,6 +40,51 @@ from aq_engine.common import ensure_utc, DatabaseError
 
 
 logger = logging.getLogger(__name__)
+
+class CompatibleUUID(UUID):
+    """UUID subclass that compares equal to its string representation."""
+
+    def __eq__(self, other):
+        if isinstance(other, str):
+            return str(self) == other
+        return super().__eq__(other)
+
+    def __hash__(self):
+        return super().__hash__()
+
+
+class GUID(TypeDecorator):
+    """Platform-independent GUID type.
+
+    Uses PostgreSQL's native UUID type, or Uuid on other dialects.
+    Coerces strings to CompatibleUUID objects on bind.
+    """
+
+    impl = Uuid(as_uuid=True)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return value
+        if isinstance(value, UUID):
+            return value
+        try:
+            return CompatibleUUID(str(value))
+        except (ValueError, AttributeError):
+            return value
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return value
+        if isinstance(value, CompatibleUUID):
+            return value
+        if isinstance(value, UUID):
+            return CompatibleUUID(str(value))
+        try:
+            return CompatibleUUID(str(value))
+        except (ValueError, AttributeError):
+            return value
+
 
 # Surrogate primary keys. SQLite only auto-increments an ``INTEGER PRIMARY KEY``
 # column, so a plain BIGINT key is never filled in there and every insert fails
@@ -182,7 +228,7 @@ class IngestionRun(Base):
 
     __tablename__ = "ingestion_run"
 
-    run_id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    run_id = Column(GUID, primary_key=True, default=uuid4)
     source_id = Column(BigInteger, ForeignKey("source.source_id"), nullable=False)
     started_at = Column(DateTime(timezone=True), nullable=False)
     finished_at = Column(DateTime(timezone=True))
@@ -213,7 +259,7 @@ class QualityRun(Base):
 
     __tablename__ = "quality_run"
 
-    quality_run_id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    quality_run_id = Column(GUID, primary_key=True, default=uuid4)
     started_at = Column(DateTime(timezone=True), nullable=False)
     finished_at = Column(DateTime(timezone=True))
     input_records = Column(BigInteger)
@@ -439,6 +485,10 @@ class Database:
             logger.error(f"Database health check failed: {e}")
             return False
 
+    def is_connected(self) -> bool:
+        """Check if database is accessible (alias for health_check)."""
+        return self.health_check()
+
     @contextlib.contextmanager
     def session(self):
         """Context manager for database session.
@@ -468,12 +518,9 @@ class Database:
                 f"Database error: {str(e)}",
                 context={"error_type": type(e).__name__},
             ) from e
-        except Exception as e:
+        except Exception:
             session.rollback()
-            raise DatabaseError(
-                f"Unexpected database error: {str(e)}",
-                context={"error_type": type(e).__name__},
-            ) from e
+            raise
         finally:
             session.close()
 
@@ -689,8 +736,8 @@ class IngestionRunRepository:
                 requested_end = ensure_utc(requested_end)
 
             # The orchestrator passes ``str(uuid4())``; the column holds UUID objects.
-            if not isinstance(run_id, UUID):
-                run_id = UUID(str(run_id))
+            if not isinstance(run_id, CompatibleUUID):
+                run_id = CompatibleUUID(str(run_id))
 
             with self.db.session() as session:
                 run = IngestionRun(
@@ -767,3 +814,8 @@ class IngestionRunRepository:
                 f"Failed to get watermark: {str(e)}",
                 context={"source_id": source_id},
             ) from e
+
+
+# Backward compatibility and CLI alias
+DatabaseConnection = Database
+
