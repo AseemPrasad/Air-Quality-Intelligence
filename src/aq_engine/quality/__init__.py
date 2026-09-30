@@ -19,7 +19,12 @@ from aq_engine.quality.rules import (
 )
 from aq_engine.quality.quarantine import QuarantineManager
 from aq_engine.quality.deduplication import Deduplicator
-from aq_engine.quality.late_arrival import LateLookbackProcessor, LateArrivalClassification
+from aq_engine.quality.late_arrival import (
+    LateLookbackProcessor,
+    LateArrivalClassification,
+    is_late_arrival,
+    evaluate_record_delay,
+)
 from aq_engine.quality.flatline import FlatlineValidator
 from aq_engine.quality.drift import SensorDriftValidator
 
@@ -41,6 +46,8 @@ __all__ = [
     "Deduplicator",
     "LateLookbackProcessor",
     "LateArrivalClassification",
+    "is_late_arrival",
+    "evaluate_record_delay",
     "FlatlineValidator",
     "SensorDriftValidator",
 ]
