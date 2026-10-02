@@ -86,6 +86,15 @@ class EventDetector:
             logger.debug("No anomalies with HIGH+ severity")
             return []
 
+        # AnomalyDetector emits hour_start as an ISO 8601 string, while callers
+        # may also pass datetimes. Normalise once, here, so that sorting, gap
+        # arithmetic and window checks below all operate on UTC datetimes.
+        anomalous = self._normalize_anomalies(anomalous)
+
+        if not anomalous:
+            logger.warning("No anomalies with a usable hour_start; no events detected")
+            return []
+
         # Group by (location_id, pollutant)
         grouped = self._group_by_location_pollutant(anomalous)
 
@@ -107,6 +116,63 @@ class EventDetector:
 
         return merged_events
 
+    @staticmethod
+    def _parse_hour_start(value: Any) -> datetime:
+        """Convert an anomaly ``hour_start`` into a timezone-aware UTC datetime.
+
+        Accepts the two shapes that exist in the pipeline:
+
+        - ``datetime`` (naive values are assumed to be UTC, like ``ensure_utc``)
+        - ISO 8601 ``str`` as produced by ``AnomalyDetector`` and documented in
+          the anomaly output contract, including the ``Z`` suffix.
+
+        Raises:
+            ValueError: If the value is missing or not a valid timestamp.
+        """
+        if isinstance(value, datetime):
+            return ensure_utc(value)
+
+        if isinstance(value, str) and value.strip():
+            text = value.strip()
+            if text[-1] in ("Z", "z"):
+                text = text[:-1] + "+00:00"
+            try:
+                return ensure_utc(datetime.fromisoformat(text))
+            except ValueError as exc:
+                raise ValueError(f"Invalid hour_start timestamp: {value!r}") from exc
+
+        raise ValueError(f"Missing or unsupported hour_start: {value!r}")
+
+    def _normalize_anomalies(
+        self, anomalies: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Return copies of ``anomalies`` whose ``hour_start`` is a UTC datetime.
+
+        Input dicts are never mutated. Anomalies whose timestamp is missing or
+        unparseable cannot be placed on the timeline, so they are skipped with a
+        warning instead of aborting detection for every other location.
+        """
+        normalized = []
+        skipped = 0
+
+        for anomaly in anomalies:
+            try:
+                hour_start = self._parse_hour_start(anomaly.get("hour_start"))
+            except ValueError as exc:
+                skipped += 1
+                logger.debug(f"Skipping anomaly for event detection: {exc}")
+                continue
+
+            normalized.append({**anomaly, "hour_start": hour_start})
+
+        if skipped:
+            logger.warning(
+                f"Skipped {skipped} anomalies with missing/invalid hour_start "
+                "during event detection"
+            )
+
+        return normalized
+
     def _group_by_location_pollutant(
         self, anomalies: List[Dict[str, Any]]
     ) -> Dict[Tuple[str, str], List[Dict[str, Any]]]:
@@ -125,9 +191,7 @@ class EventDetector:
 
         # Sort each group by hour_start
         for key in grouped:
-            grouped[key].sort(
-                key=lambda x: x.get("hour_start", datetime.min)
-            )
+            grouped[key].sort(key=lambda x: x["hour_start"])
 
         return grouped
 
