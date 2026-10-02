@@ -870,5 +870,98 @@ class TestMultipleEventSequences:
         assert events[1]["anomaly_count"] == 3
 
 
+def _anomaly_run(offsets, base_time=None, severity="HIGH", value=150.0, z=3.5):
+    """Build HIGH anomalies for one location/pollutant at the given hour offsets."""
+    base_time = base_time or datetime(2026, 8, 15, 0, 0, 0, tzinfo=timezone.utc)
+    return [
+        {
+            "location_id": "kolkata",
+            "pollutant": "pm25",
+            "hour_start": base_time + timedelta(hours=offset),
+            "observed_value": value,
+            "robust_z": z,
+            "severity": severity,
+        }
+        for offset in offsets
+    ]
+
+
+class TestLongEventRuns:
+    """Runs longer than MIN_CONSECUTIVE_ANOMALIES must not lose their tail.
+
+    Regression: _find_consecutive_anomalies returned as soon as it had
+    MIN_CONSECUTIVE_ANOMALIES (3) indices, and the cursor then resumed after
+    those 3. Any remainder shorter than 3 could never qualify as its own
+    event and was silently dropped, so runs of 4, 5, 7, 8... hours were
+    under-reported. Earlier tests only used 3 or 6 anomalies (exact
+    multiples of 3), which hid the problem.
+    """
+
+    def test_runs_that_are_not_multiples_of_three_keep_every_hour(self, detector):
+        for hours in (4, 5, 7, 8, 10, 11):
+            events = detector.detect_events(_anomaly_run(range(hours)))
+
+            assert len(events) == 1, f"{hours}h run split into {len(events)} events"
+            assert events[0]["anomaly_count"] == hours
+            assert events[0]["duration_hours"] == hours
+
+    def test_peak_in_trailing_hours_is_not_lost(self, detector):
+        anomalies = _anomaly_run(range(5))
+        anomalies[4]["observed_value"] = 999.0
+        anomalies[4]["robust_z"] = 9.0
+        anomalies[4]["severity"] = "EXTREME"
+
+        events = detector.detect_events(anomalies)
+
+        assert len(events) == 1
+        assert events[0]["peak_value"] == 999.0
+        assert events[0]["peak_anomaly_score"] == 9.0
+        assert events[0]["severity"] == "EXTREME"
+
+    def test_mean_includes_trailing_hours(self, detector):
+        anomalies = _anomaly_run(range(4))
+        for anomaly, value in zip(anomalies, (100.0, 100.0, 100.0, 200.0)):
+            anomaly["observed_value"] = value
+
+        events = detector.detect_events(anomalies)
+
+        assert pytest.approx(events[0]["mean_value"]) == 125.0
+
+    def test_window_event_absorbs_directly_continuing_hour(self, detector):
+        """Hours 0, 2, 3 form a window event; hour 4 continues 2-3-4 hourly."""
+        events = detector.detect_events(_anomaly_run((0, 2, 3, 4)))
+
+        assert len(events) == 1
+        assert events[0]["anomaly_count"] == 4
+        assert events[0]["duration_hours"] == 5
+
+    def test_distant_trailing_anomaly_is_not_absorbed(self, detector):
+        """A lone anomaly 2h after the event ends is not part of the event."""
+        events = detector.detect_events(_anomaly_run((0, 1, 2, 4)))
+
+        assert len(events) == 1
+        assert events[0]["anomaly_count"] == 3
+        assert events[0]["duration_hours"] == 3
+
+    def test_long_run_followed_by_separate_event_stays_separate(self, detector):
+        events = detector.detect_events(
+            _anomaly_run(list(range(4)) + list(range(10, 15)))
+        )
+
+        assert [e["anomaly_count"] for e in events] == [4, 5]
+        assert [e["duration_hours"] for e in events] == [4, 5]
+
+    def test_long_runs_are_isolated_per_location(self, detector):
+        a = _anomaly_run(range(4))
+        b = _anomaly_run(range(5))
+        for row in b:
+            row["location_id"] = "delhi"
+
+        events = {e["location_id"]: e for e in detector.detect_events(a + b)}
+
+        assert events["kolkata"]["anomaly_count"] == 4
+        assert events["delhi"]["anomaly_count"] == 5
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

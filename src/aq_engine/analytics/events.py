@@ -186,7 +186,7 @@ class EventDetector:
             anomalies, start_idx, self.MIN_CONSECUTIVE_ANOMALIES
         )
         if consecutive_indices:
-            return consecutive_indices
+            return self._extend_event_tail(anomalies, consecutive_indices)
 
         # Check 4-hour rolling window
         window_indices = self._find_anomalies_in_window(
@@ -196,9 +196,48 @@ class EventDetector:
             self.ROLLING_WINDOW_HOURS,
         )
         if window_indices:
-            return window_indices
+            return self._extend_event_tail(anomalies, window_indices)
 
         return []
+
+    def _extend_event_tail(
+        self, anomalies: List[Dict[str, Any]], event_indices: List[int]
+    ) -> List[int]:
+        """Absorb anomalies that directly continue an already-qualified event.
+
+        Once an event has qualified (3 consecutive hours, or 3 anomalies in a
+        4-hour window), any following anomaly that starts no more than
+        ``MAX_GAP_FOR_MERGE_HOURS`` after the event's last anomaly belongs to
+        that same event. This is the same gap rule ``_merge_nearby_events``
+        applies between two *separate* events; a lone trailing anomaly can
+        never become an event of its own, so without this step it would be
+        discarded and the event's peak, severity, duration and anomaly_count
+        would all be understated.
+
+        Args:
+            anomalies: Sorted list of anomalies for one location/pollutant.
+            event_indices: Contiguous indices of the already-qualified event.
+
+        Returns:
+            ``event_indices`` extended over every directly-continuing anomaly.
+        """
+        indices = list(event_indices)
+        max_gap = timedelta(hours=self.MAX_GAP_FOR_MERGE_HOURS)
+
+        next_idx = indices[-1] + 1
+        while next_idx < len(anomalies):
+            last_time = anomalies[indices[-1]].get("hour_start")
+            next_time = anomalies[next_idx].get("hour_start")
+            if not last_time or not next_time:
+                break
+
+            if ensure_utc(next_time) - ensure_utc(last_time) > max_gap:
+                break
+
+            indices.append(next_idx)
+            next_idx += 1
+
+        return indices
 
     def _find_consecutive_anomalies(
         self,
@@ -214,7 +253,11 @@ class EventDetector:
             min_count: Minimum consecutive required
 
         Returns:
-            List of indices if found, empty otherwise
+            Indices of the *entire* consecutive run if it contains at least
+            ``min_count`` anomalies, empty otherwise. ``min_count`` is only the
+            qualifying threshold; it must never cap how much of the run is
+            returned, otherwise the tail of every run longer than ``min_count``
+            is silently dropped from the event.
         """
         indices = []
 
@@ -235,10 +278,7 @@ class EventDetector:
 
             indices.append(i)
 
-            if len(indices) >= min_count:
-                return indices
-
-        return [] if len(indices) < min_count else indices
+        return indices if len(indices) >= min_count else []
 
     def _find_anomalies_in_window(
         self,
