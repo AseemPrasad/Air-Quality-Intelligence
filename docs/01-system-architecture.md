@@ -112,7 +112,21 @@ Raw Records  →  Measurement Key  →  Deduplicate  →  Canonical
                   pollutant,
                   time)
 ```
+### Sensor Quality Validation
 
+Sensor quality checks identify problematic measurements before they affect downstream analytics and forecasting.
+
+#### Flatline Detection
+
+Flatline validation identifies sensors that repeatedly report the same value over a configured observation window. This helps detect stuck sensors or malfunctioning measurement devices.
+
+#### Sensor Drift Detection
+
+Drift validation identifies gradual changes in sensor measurements that may indicate sensor degradation or calibration issues.
+
+#### Late-Arrival Handling
+
+Late-arrival handling evaluates records that arrive after their expected processing window. UTC-aware timestamps are used to maintain consistent time-based processing.
 ### Aggregation (Hourly)
 ```
 Canonical Records  →  Group by hour  →  Statistics  →  Facts
@@ -188,7 +202,7 @@ Predictions  →  Store DB  →  API Query  →  JSON Response
 
 ```
 ┌─ Connectors (OpenAQ, Open-Meteo) ─────────────────┐
-├─ Quality (Validation, Deduplication, Quarantine) ─┤
+├─ Quality (Validation, Deduplication, Quarantine, Flatline/Drift, Late-Arrival) ─┤
 ├─ Storage (Parquet, PostgreSQL) ───────────────────┤
 ├─ Analytics (Aggregation, Baselines, Anomalies) ───┤
 ├─ ML (Features, Training, Inference, Intervals) ───┤
