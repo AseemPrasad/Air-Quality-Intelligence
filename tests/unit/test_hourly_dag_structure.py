@@ -1,16 +1,17 @@
 """Tests for hourly DAG structure without Airflow dependency."""
 
 import ast
-import pytest
 import re
 from pathlib import Path
+
+import pytest
 
 
 @pytest.fixture
 def dag_file_content():
     """Read the DAG file content."""
     dag_path = Path(__file__).parent.parent.parent / "dags" / "aq_hourly_ingest_dag.py"
-    with open(dag_path, "r") as f:
+    with open(dag_path) as f:
         return f.read()
 
 
@@ -148,11 +149,6 @@ class TestTaskDependencies:
 
     def test_all_tasks_in_dependency_chain(self, dag_file_content):
         """Test all tasks are in dependency chain."""
-        # Extract the dependency section
-        dependency_section = dag_file_content[
-            dag_file_content.find("(") + 1 : dag_file_content.rfind(")")
-        ]
-
         task_names = [
             "start_task",
             "ingest_openaq_task",
@@ -217,8 +213,9 @@ class TestLogging:
     """Test logging configuration."""
 
     def test_logging_import(self, dag_file_content):
-        """Test logging is imported."""
-        assert "import logging" in dag_file_content
+        """Test the shared logging utility is used."""
+        assert "from aq_engine.common.logger import get_logger" in dag_file_content
+        assert "logger = get_logger(__name__)" in dag_file_content
 
     def test_logging_used(self, dag_file_content):
         """Test logging is used in tasks."""
@@ -228,6 +225,32 @@ class TestLogging:
     def test_structured_logging(self, dag_file_content):
         """Test structured JSON logging."""
         assert "json.dumps(log_data)" in dag_file_content
+
+    def test_correlated_airflow_task_start_logging(self, dag_file_content):
+        """Test task start logs include the standard correlation metadata."""
+        assert '"on_execute_callback": _log_task_started' in dag_file_content
+        assert '"event": "dag_task_started"' in dag_file_content
+        assert '"request_id": dag_run_id' in dag_file_content
+        assert '"operation": "airflow_task"' in dag_file_content
+        assert '"source": "airflow"' in dag_file_content
+
+    def test_all_dags_use_shared_correlated_task_logging(self):
+        """Test every DAG configures the same correlated task-start logging."""
+        dags_dir = Path(__file__).parent.parent.parent / "dags"
+        for dag_name in (
+            "aq_hourly_ingest_dag.py",
+            "aq_daily_backfill_dag.py",
+            "aq_model_retrain_dag.py",
+        ):
+            dag_source = (dags_dir / dag_name).read_text()
+            ast.parse(dag_source)
+            assert "from aq_engine.common.logger import get_logger" in dag_source
+            assert "logger = get_logger(__name__)" in dag_source
+            assert '"on_execute_callback": _log_task_started' in dag_source
+            assert '"event": "dag_task_started"' in dag_source
+            assert '"request_id": dag_run_id' in dag_source
+            assert '"operation": "airflow_task"' in dag_source
+            assert '"source": "airflow"' in dag_source
 
 
 class TestComments:
