@@ -97,9 +97,7 @@ EXTERNAL SOURCES
 - Git
 
 ### 2. Clone & Setup
-
-```bash
-```bash
+```
 git clone https://github.com/AseemPrasad/Air-Quality-Intelligence.git
 cd Air-Quality-Intelligence
 ```
