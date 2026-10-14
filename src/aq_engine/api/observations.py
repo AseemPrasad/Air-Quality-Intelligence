@@ -9,6 +9,7 @@ from fastapi import APIRouter, Query, HTTPException, status
 
 logger = logging.getLogger(__name__)
 MAX_EVENT_RANGE = timedelta(days=90)
+MAX_HISTORY_RANGE = timedelta(days=90)
 
 def _as_utc(value: datetime) -> datetime:
     """Treat a query timestamp without an offset as UTC.
@@ -468,6 +469,15 @@ async def get_history(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="End date must be after start date",
         )
+    if end_date - start_date > MAX_HISTORY_RANGE:
+        logger.warning(
+            f"History date range exceeds maximum: "
+            f"{start_date} to {end_date}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="History date range cannot exceed 90 days",
+        )
 
     # Generate mock historical data
     data_points = []
@@ -637,7 +647,7 @@ async def get_events(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="End date must be after start date",
         )
-         if end_date - start_date > MAX_EVENT_RANGE:
+    if end_date - start_date > MAX_EVENT_RANGE:
         logger.warning(
             f"Event date range exceeds maximum: "
             f"{start_date} to {end_date}"
