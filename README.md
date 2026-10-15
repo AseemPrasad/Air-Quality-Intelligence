@@ -97,11 +97,10 @@ EXTERNAL SOURCES
 - Git
 
 ### 2. Clone & Setup
-
-```bash
-git clone <repository>
-cd air-quality-intelligence
-
+```
+git clone https://github.com/AseemPrasad/Air-Quality-Intelligence.git
+cd Air-Quality-Intelligence
+```
 # Copy environment file
 cat > .env << 'EOF'
 DATABASE_URL=postgresql://aq_user:aq_password@postgres:5432/air_quality
