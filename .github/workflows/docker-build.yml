@@ -212,32 +212,32 @@ jobs:
           script: |
             const version = '${{ steps.meta.outputs.version }}';
             const releaseNotes = `
-## Docker Images Released
+            ## Docker Images Released
 
-### Version: ${version}
+            ### Version: ${version}
 
-**Images:**
-- \`aq-api:${version}\`
-- \`aq-dashboard:${version}\`
-- \`aq-worker:${version}\`
+            **Images:**
+            - \`aq-api:${version}\`
+            - \`aq-dashboard:${version}\`
+            - \`aq-worker:${version}\`
 
-**Tags:**
-- \`aq-api:latest\`
-- \`aq-dashboard:latest\`
-- \`aq-worker:latest\`
+            **Tags:**
+            - \`aq-api:latest\`
+            - \`aq-dashboard:latest\`
+            - \`aq-worker:latest\`
 
-**Quick Start:**
-\`\`\`bash
-docker-compose pull
-docker-compose up -d
-\`\`\`
+            **Quick Start:**
+            \`\`\`bash
+            docker-compose pull
+            docker-compose up -d
+            \`\`\`
 
-**Verification:**
-\`\`\`bash
-docker/health-check.sh
-\`\`\`
+            **Verification:**
+            \`\`\`bash
+            docker/health-check.sh
+            \`\`\`
 
-See [Docker Documentation](docs/Docker-and-Deployment.md) for details.
+            See [Docker Documentation](docs/Docker-and-Deployment.md) for details.
             `;
 
             github.rest.repos.createRelease({
