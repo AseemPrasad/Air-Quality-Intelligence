@@ -23,15 +23,18 @@ class PredictionEngine:
         self,
         model_path: Optional[str] = None,
         residuals: Optional[np.ndarray] = None,
+        model_paths: Optional[Dict[int, str]] = None,
     ):
         """Initialize prediction engine.
 
         Args:
             model_path: Path to trained model pickle file
             residuals: Validation residuals for interval estimation
+            model_paths: Optional {horizon_minutes: path}, one model per horizon
         """
         self.model_path = model_path
         self.model_dict = None
+        self.models: Dict[int, Dict[str, Any]] = {}
         self.residuals = residuals
         self.feature_engineer = FeatureEngineer()
         self.baseline_forecaster = BaselineForecaster()
@@ -42,6 +45,20 @@ class PredictionEngine:
                 logger.info(f"Loaded model from {model_path}")
             except Exception as e:
                 logger.warning(f"Failed to load model: {e}")
+
+        for horizon_minutes, path in (model_paths or {}).items():
+            try:
+                model_dict = ModelTrainer.load_model(path)
+            except Exception as e:
+                logger.warning(f"Failed to load {horizon_minutes}min model: {e}")
+                continue
+            if model_dict.get("target_horizon") != horizon_minutes:
+                logger.warning(
+                    f"Skipping {path}: trained for {model_dict.get('target_horizon')}min, "
+                    f"registered for {horizon_minutes}min"
+                )
+                continue
+            self.models[horizon_minutes] = model_dict
 
     def predict_horizons(
         self,
@@ -75,6 +92,9 @@ class PredictionEngine:
 
         for horizon_minutes in horizons:
             target_time = reference_time + timedelta(minutes=horizon_minutes)
+            # Reset per horizon so a failure below never falls back on the
+            # previous horizon's features.
+            features = None
 
             try:
                 # Generate features (no future leakage)
@@ -87,13 +107,17 @@ class PredictionEngine:
                     citywide_pm25_baseline=citywide_baselines,
                 )
 
-                # Make prediction
-                if self.model_dict is not None:
+                # Features are the same for every horizon, so only a model
+                # trained for this horizon gives a different answer.
+                model_dict = self._model_for_horizon(horizon_minutes)
+                if model_dict is not None:
                     pred_dict = self._predict_with_model(
-                        location_id, target_time, horizon_minutes, features
+                        location_id, target_time, horizon_minutes, features, model_dict
                     )
                 else:
-                    logger.warning("No model available, using baseline forecast")
+                    logger.warning(
+                        f"No model trained for {horizon_minutes}min, using baseline forecast"
+                    )
                     pred_dict = self._predict_with_baseline(
                         location_id, target_time, features
                     )
@@ -127,12 +151,24 @@ class PredictionEngine:
 
         return predictions
 
+    def _model_for_horizon(self, horizon_minutes: int) -> Optional[Dict[str, Any]]:
+        """Return the loaded model trained for this horizon, or None."""
+        if horizon_minutes in self.models:
+            return self.models[horizon_minutes]
+        if (
+            self.model_dict is not None
+            and self.model_dict.get("target_horizon") == horizon_minutes
+        ):
+            return self.model_dict
+        return None
+
     def _predict_with_model(
         self,
         location_id: str,
         target_time: datetime,
         horizon_minutes: int,
         features: Dict[str, Any],
+        model_dict: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Make prediction using trained model.
 
@@ -141,16 +177,18 @@ class PredictionEngine:
             target_time: Target time for prediction
             horizon_minutes: Prediction horizon
             features: Generated feature dict
+            model_dict: Model to use (defaults to the single loaded model)
 
         Returns:
             Prediction dict
         """
-        if self.model_dict is None:
+        model_dict = model_dict or self.model_dict
+        if model_dict is None:
             raise ValueError("No model loaded")
 
-        model = self.model_dict["model"]
-        scaler = self.model_dict["scaler"]
-        feature_cols = self.model_dict["feature_cols"]
+        model = model_dict["model"]
+        scaler = model_dict["scaler"]
+        feature_cols = model_dict["feature_cols"]
 
         # Extract feature values in correct order
         X = np.array([features.get(col) for col in feature_cols]).reshape(1, -1)
@@ -168,7 +206,7 @@ class PredictionEngine:
 
         return {
             "prediction_id": str(uuid.uuid4()),
-            "model_version_id": self._get_model_version_id(self.model_dict),
+            "model_version_id": self._get_model_version_id(model_dict),
             "location_id": location_id,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "target_time": target_time.isoformat(),
@@ -177,7 +215,7 @@ class PredictionEngine:
             "lower_bound": lower_bound,
             "upper_bound": upper_bound,
             "confidence": confidence,
-            "model_type": self.model_dict.get("model_type"),
+            "model_type": model_dict.get("model_type"),
         }
 
     @staticmethod
