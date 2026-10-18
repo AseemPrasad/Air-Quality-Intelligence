@@ -1,11 +1,12 @@
-import logging
 import time
 import uuid
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-logger = logging.getLogger(__name__)
+from aq_engine.common.logger import get_logger
+
+logger = get_logger(__name__)
 
 async def global_audit_and_exception_middleware(request: Request, call_next):
     """
@@ -13,6 +14,7 @@ async def global_audit_and_exception_middleware(request: Request, call_next):
     and sanitize unhandled exceptions to prevent stack-trace leakage.
     """
     request_id = str(uuid.uuid4())
+    request.state.request_id = request_id
     start_time = time.time()
 
     try:
