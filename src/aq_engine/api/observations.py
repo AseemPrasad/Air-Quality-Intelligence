@@ -726,7 +726,8 @@ async def get_baseline(
         )
 
     now = datetime.now(timezone.utc)
-    hour = hour or now.hour
+    # hour=0 is midnight, a valid request; only fall back when it's omitted.
+    hour = now.hour if hour is None else hour
     month = month or now.month
 
     logger.info(
