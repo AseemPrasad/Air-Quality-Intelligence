@@ -3,9 +3,29 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timedelta
-from math import isnan
+from datetime import UTC, datetime
+from math import isfinite
 from typing import Any, Iterable, List
+
+# Records without a usable timestamp sort first. This has to be timezone-aware:
+# observed_at is UTC-aware everywhere else in the pipeline, and a naive
+# datetime.min cannot be compared against it.
+_EARLIEST = datetime.min.replace(tzinfo=UTC)
+
+
+def _observed_at_key(record: dict[str, Any]) -> datetime:
+    """Sort key for a record's observed_at (datetime, ISO string or missing)."""
+    value = record.get("observed_at")
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return _EARLIEST
+    if not isinstance(value, datetime):
+        return _EARLIEST
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 class SensorDriftValidator:
@@ -42,6 +62,23 @@ class SensorDriftValidator:
             return 0.0
         return numerator / denominator
 
+    @staticmethod
+    def _numeric_values(window: list[dict[str, Any]]) -> list[float]:
+        """Finite numeric values from a window, skipping anything unusable."""
+        values = []
+        for record in window:
+            value = record.get("value")
+            if value is None or isinstance(value, bool):
+                continue
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                continue
+            if not isfinite(numeric):
+                continue
+            values.append(numeric)
+        return values
+
     def flag_records(self, records: Iterable[dict[str, Any]]) -> List[dict[str, Any]]:
         """Return records flagged as DRIFT_DETECTED."""
         grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
@@ -58,24 +95,13 @@ class SensorDriftValidator:
             station_to_pollutant[station_id].append(pollutant)
 
         for (station_id, pollutant), series in grouped.items():
-            series.sort(key=lambda r: r.get("observed_at") or datetime.min)
+            series.sort(key=_observed_at_key)
 
             if len(series) < self.min_points:
                 continue
 
             window = series[-self.min_points :]
-            values = []
-            for record in window:
-                value = record.get("value")
-                if value is None or isinstance(value, bool):
-                    continue
-                try:
-                    numeric = float(value)
-                except (TypeError, ValueError):
-                    continue
-                if isnan(numeric):
-                    continue
-                values.append(numeric)
+            values = self._numeric_values(window)
 
             if len(values) < self.min_points:
                 continue
@@ -89,22 +115,14 @@ class SensorDriftValidator:
             for (other_station, other_pollutant), other_series in grouped.items():
                 if other_station == station_id or other_pollutant != pollutant:
                     continue
-                other_series_sorted = sorted(
-                    other_series,
-                    key=lambda r: r.get("observed_at") or datetime.min,
-                )
+                other_series_sorted = sorted(other_series, key=_observed_at_key)
                 if len(other_series_sorted) < self.min_points:
                     continue
                 other_window = other_series_sorted[-self.min_points :]
-                other_values = []
-                for record in other_window:
-                    value = record.get("value")
-                    if value is None or isinstance(value, bool):
-                        continue
-                    try:
-                        other_values.append(float(value))
-                    except (TypeError, ValueError):
-                        pass
+                # Same filtering as the station's own window: a single NaN here
+                # would turn the neighbour slope, and the average, into NaN and
+                # silently stop drift from ever being flagged.
+                other_values = self._numeric_values(other_window)
                 if len(other_values) >= self.min_points:
                     neighbors.append(self._linear_slope(other_values))
 
