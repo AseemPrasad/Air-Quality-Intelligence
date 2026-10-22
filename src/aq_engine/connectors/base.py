@@ -241,13 +241,13 @@ class BaseConnector(abc.ABC):
             try:
                 # Fetch data from source
                 response = self._fetch_with_retry(start_time, end_time)
-                run_metadata.records_received = 1  # Will be updated by subclass
 
                 # Validate source response
                 self.validate_source_response(response)
 
                 # Parse into canonical records
                 parsed_records = self.parse(response, start_time, end_time)
+                run_metadata.records_received = len(parsed_records)
                 logger.debug(f"Parsed {len(parsed_records)} records")
 
                 # Write to storage
