@@ -641,7 +641,7 @@ def test_execute_time_window_aggregation_returns_empty_dataframe_for_no_rows(
     engine = ParquetAnalyticsEngine(data_dir=str(tmp_path))
     empty = pl.DataFrame(
         schema={
-            "location_id": pl.String,
+            "location_id": pl.Utf8,
             "hour_bucket": pl.Datetime(time_zone="UTC"),
             "mean_concentration": pl.Float64,
             "peak_concentration": pl.Float64,

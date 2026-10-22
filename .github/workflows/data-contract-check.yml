@@ -61,65 +61,33 @@ jobs:
           from pydantic import ValidationError
 
           try:
-              # Import all contract models
-              from src.aq_engine.quality.contracts import (
+              # contracts.py defines the two raw-record models; the hourly fact,
+              # baseline, anomaly and event shapes live elsewhere.
+              from aq_engine.quality.contracts import (
                   RawAirQualityRecord,
                   RawWeatherRecord,
-                  HourlyFact,
-                  Baseline,
-                  Anomaly,
-                  PollutionEvent,
               )
 
               print("✓ All contract models imported successfully")
 
-              # Validate schema by instantiation with minimal data
-              test_cases = {
-                  "RawAirQualityRecord": {
-                      "location_id": "test_001",
-                      "station_id": "stn_001",
-                      "pollutant": "PM2.5",
-                      "value": 50.0,
-                      "timestamp": "2026-08-15T10:00:00Z",
-                      "source": "openaq",
-                      "external_id": "ext_001"
-                  },
-                  "RawWeatherRecord": {
-                      "location_id": "test_001",
-                      "timestamp": "2026-08-15T10:00:00Z",
-                      "temperature_c": 28.5,
-                      "source": "open_meteo",
-                      "external_id": "grid_001"
-                  },
-                  "HourlyFact": {
-                      "location_id": "test_001",
-                      "hour_start": "2026-08-15T10:00:00Z",
-                      "pollutant": "PM2.5",
-                      "mean_value": 55.0,
-                      "median_value": 54.5,
-                      "min_value": 40.0,
-                      "max_value": 70.0,
-                      "observation_count": 12,
-                      "coverage_pct": 100.0
-                  },
-                  "Baseline": {
-                      "location_id": "test_001",
-                      "pollutant": "PM2.5",
-                      "hour_of_day": 10,
-                      "month": 8,
-                      "observation_count": 30,
-                      "median": 55.0,
-                      "mad": 8.5
-                  },
-              }
-
-              for model_name, test_data in test_cases.items():
-                  model = globals()[model_name]
+              # Each model documents an example payload in its schema. That example
+              # has to validate, and dropping a required field has to fail.
+              for model in (RawAirQualityRecord, RawWeatherRecord):
+                  example = model.model_json_schema()["example"]
                   try:
-                      instance = model(**test_data)
-                      print(f"✓ {model_name} schema validated")
+                      model(**example)
+                      print(f"✓ {model.__name__} schema validated")
                   except ValidationError as e:
-                      print(f"✗ {model_name} validation failed: {e}")
+                      print(f"✗ {model.__name__} validation failed: {e}")
+                      sys.exit(1)
+
+                  incomplete = {k: v for k, v in example.items() if k != "observed_at"}
+                  try:
+                      model(**incomplete)
+                  except ValidationError:
+                      print(f"✓ {model.__name__} rejects a record without observed_at")
+                  else:
+                      print(f"✗ {model.__name__} accepted a record without observed_at")
                       sys.exit(1)
 
               print("\n✓ All Pydantic schemas valid")
