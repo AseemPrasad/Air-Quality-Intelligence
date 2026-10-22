@@ -102,6 +102,10 @@ class ParquetWriter:
 
         logger.info(f"ParquetWriter initialized with root_path: {self.root_path}")
 
+    # Polars expects a row count, not a byte size. 100k rows keeps row groups
+    # small enough for efficient pruning without creating excessive metadata.
+    ROW_GROUP_SIZE_ROWS = 100_000
+
     def write_air_quality_raw(
         self,
         records: List[dict],
@@ -302,7 +306,7 @@ class ParquetWriter:
                 df.write_parquet(
                     str(tmp_path),
                     compression="snappy",
-                    row_group_size=128 * 1024 * 1024,
+                    row_group_size=self.ROW_GROUP_SIZE_ROWS,
                 )
 
                 # Atomic rename
