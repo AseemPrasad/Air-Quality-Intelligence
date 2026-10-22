@@ -278,7 +278,21 @@ class OpenMeteoConnector(BaseConnector):
                 station_id, latitude, longitude, hourly_data, data.get("raw_payload_hash")
             )
 
-            return records
+            # The API accepts only dates, so it can return hours outside the
+            # requested datetime window. Keep only observations that belong to
+            # this run.
+            filtered_records = [
+                record
+                for record in records
+                if start_time <= ensure_utc(record["observed_at"]) <= end_time
+            ]
+            if len(filtered_records) != len(records):
+                logger.debug(
+                    f"Filtered {len(records) - len(filtered_records)} "
+                    f"out-of-window records for station {station_id}"
+                )
+
+            return filtered_records
 
         except requests.HTTPError as e:
             status_code = response.status_code
