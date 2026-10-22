@@ -8,7 +8,7 @@ import os
 import contextlib
 import time
 import tempfile
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from uuid import uuid4
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -476,13 +476,50 @@ class ParquetStorage:
             return False
 
     def write(self, records: list[dict], source: str = "openaq") -> Path | None:
-        """Write records to storage."""
+        """Write records to their observation-date partitions.
+
+        Args:
+            records: Records to store.
+            source: "openaq" for air quality or "weather".
+
+        Returns:
+            Path to the last partition written, or None for an empty batch.
+        """
         if not records:
             return None
-        today = datetime.now().date()
-        if source == "weather":
-            return self.writer.write_weather_raw(records, today)
-        return self.writer.write_air_quality_raw(records, today)
+
+        grouped: dict[date, list[dict]] = {}
+        for record in records:
+            observed_at = record.get("observed_at") or record.get("ingested_at")
+            if isinstance(observed_at, str):
+                try:
+                    observed_at = datetime.fromisoformat(
+                        observed_at.replace("Z", "+00:00")
+                    )
+                except ValueError:
+                    observed_at = None
+
+            if isinstance(observed_at, datetime):
+                partition_date = ensure_utc(observed_at).date()
+            elif isinstance(observed_at, date):
+                partition_date = observed_at
+            else:
+                partition_date = datetime.now(timezone.utc).date()
+
+            grouped.setdefault(partition_date, []).append(record)
+
+        output_path = None
+        for partition_date, partition_records in sorted(grouped.items()):
+            if source == "weather":
+                output_path = self.writer.write_weather_raw(
+                    partition_records, partition_date
+                )
+            else:
+                output_path = self.writer.write_air_quality_raw(
+                    partition_records, partition_date
+                )
+
+        return output_path
 
     def read(self, date_str: str) -> list[dict]:
         """Read records for a specific date."""
