@@ -42,6 +42,7 @@ def sample_data():
         "hour_of_day": np.random.randint(0, 24, n_samples),
         "day_of_week": np.random.randint(0, 7, n_samples),
         "season": np.random.randint(0, 4, n_samples),
+        "pm25_target_60m": np.random.uniform(40, 80, n_samples),
     })
 
     val_data = pl.DataFrame({
@@ -54,6 +55,7 @@ def sample_data():
         "hour_of_day": np.random.randint(0, 24, 50),
         "day_of_week": np.random.randint(0, 7, 50),
         "season": np.random.randint(0, 4, 50),
+        "pm25_target_60m": np.random.uniform(40, 80, 50),
     })
 
     return train_data, val_data
@@ -87,10 +89,10 @@ class TestModelTrainer:
             train_df=train_df,
             val_df=val_df,
             model_type="linear",
-            target_col="pm25_lag_1h",
         )
 
-        assert "pm25_lag_1h" not in model_dict["feature_cols"]
+        assert "pm25_target_60m" not in model_dict["feature_cols"]
+        assert "pm25_lag_1h" in model_dict["feature_cols"]
         assert "pm25_lag_2h" in model_dict["feature_cols"]
 
     def test_train_random_forest_model(self, trainer, sample_data):

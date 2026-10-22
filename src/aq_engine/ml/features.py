@@ -14,6 +14,15 @@ from aq_engine.common import ensure_utc
 
 logger = logging.getLogger(__name__)
 
+# Label columns are named per horizon, e.g. pm25_target_60m. The trainer never
+# treats a column with this prefix as an input feature.
+TARGET_PREFIX = "pm25_target_"
+
+
+def target_column(horizon_minutes: int) -> str:
+    """Name of the label column for a forecast horizon (in minutes)."""
+    return f"{TARGET_PREFIX}{horizon_minutes}m"
+
 
 class FeatureEngineer:
     """Generates ML features for PM2.5 forecasting without future leakage.
@@ -159,6 +168,51 @@ class FeatureEngineer:
             )
 
         return features
+
+    def generate_targets(
+        self,
+        target_time: datetime,
+        location_id: str,
+        horizons: List[int],
+        hourly_facts: Dict[Tuple[str, str, str], Dict[str, Any]],
+    ) -> Dict[str, Optional[float]]:
+        """Generate forecast labels for a reference time.
+
+        The label for an h-minute horizon is the PM2.5 hour that ends at
+        target_time + h, i.e. the value pm25_lag_1h will hold h minutes from
+        now. For h=60 that is the hour starting at target_time, so a label
+        never overlaps the hours generate_features() reads.
+
+        Labels are never imputed: a missing hour gives None, and the trainer
+        drops that row instead of learning from a filled-in value.
+
+        Args:
+            target_time: Reference time the features were generated at (UTC)
+            location_id: Location identifier
+            horizons: Forecast horizons in minutes (whole hours, >= 60)
+            hourly_facts: Hourly facts dict, including hours after target_time
+
+        Returns:
+            Dict mapping target_column(h) -> observed PM2.5 or None
+
+        Raises:
+            ValueError: If a horizon is not a whole number of hours >= 60
+        """
+        target_time = ensure_utc(target_time)
+        targets = {}
+
+        for horizon_minutes in horizons:
+            if horizon_minutes < 60 or horizon_minutes % 60 != 0:
+                raise ValueError(
+                    f"horizon_minutes must be a whole number of hours >= 60, "
+                    f"got {horizon_minutes}"
+                )
+            label_hour = target_time + timedelta(minutes=horizon_minutes - 60)
+            targets[target_column(horizon_minutes)] = self._get_hourly_fact(
+                hourly_facts, location_id, "pm25", label_hour, "observed_value"
+            )
+
+        return targets
 
     def _extract_pm25_lags(
         self,

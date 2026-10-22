@@ -16,6 +16,8 @@ from sklearn.ensemble import RandomForestRegressor, HistGradientBoostingRegresso
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
+from aq_engine.ml.features import TARGET_PREFIX, target_column
+
 logger = logging.getLogger(__name__)
 
 
@@ -24,6 +26,19 @@ class ModelTrainer:
 
     VALID_MODELS = ["linear", "rf", "hgb", "xgboost"]
     MODELS_DIR = Path("models")
+
+    # Columns with these prefixes are model inputs (label columns excluded).
+    FEATURE_PREFIXES = (
+        "pm25_",
+        "temp_",
+        "humidity_",
+        "wind_",
+        "hour_",
+        "day_",
+        "month_",
+        "season_",
+        "is_",
+    )
 
     def __init__(self):
         """Initialize trainer."""
@@ -35,16 +50,17 @@ class ModelTrainer:
         train_df: pl.DataFrame,
         val_df: pl.DataFrame,
         model_type: str = "linear",
-        target_col: str = "pm25_lag_1h",
+        target_col: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, float]]:
         """Train and evaluate PM2.5 model.
 
         Args:
             target_horizon: Prediction horizon in minutes
-            train_df: Training DataFrame (features)
+            train_df: Training DataFrame (features + label columns)
             val_df: Validation DataFrame
             model_type: "linear", "rf", "hgb"
-            target_col: Target column name
+            target_col: Label column. Defaults to target_column(target_horizon),
+                which FeatureEngineer.generate_targets() fills in.
 
         Returns:
             Tuple of (trained_model_dict, metrics_dict)
@@ -52,31 +68,41 @@ class ModelTrainer:
         if model_type not in self.VALID_MODELS:
             raise ValueError(f"model_type must be in {self.VALID_MODELS}")
 
+        if target_col is None:
+            target_col = target_column(target_horizon)
+
+        # A lag or rolling column describes the past, so a model trained on it
+        # never learns the horizon it is later used for.
+        if not target_col.startswith(TARGET_PREFIX) and target_col.startswith(
+            self.FEATURE_PREFIXES
+        ):
+            raise ValueError(
+                f"target_col '{target_col}' is an input feature, not a future value. "
+                f"Add labels with FeatureEngineer.generate_targets() and train on "
+                f"'{target_column(target_horizon)}'."
+            )
+
+        for name, df in (("train_df", train_df), ("val_df", val_df)):
+            if target_col not in df.columns:
+                raise ValueError(
+                    f"{name} has no '{target_col}' column. "
+                    f"Add labels with FeatureEngineer.generate_targets()."
+                )
+
         logger.info(
             f"Training {model_type} model (horizon={target_horizon}min) "
             f"on {len(train_df)} samples"
         )
 
-        # Prepare data
+        # Prepare data. Label columns for every horizon are left out, so a
+        # 3h model cannot read the 1h label as an input.
         feature_cols = [
             col
             for col in train_df.columns
-            if col != target_col
-            and col.startswith(
-                (
-                    "pm25_",
-                    "temp_",
-                    "humidity_",
-                    "wind_",
-                    "hour_",
-                    "day_",
-                    "month_",
-                    "season_",
-                    "is_",
-                )
-            )
+            if col.startswith(self.FEATURE_PREFIXES)
+            and not col.startswith(TARGET_PREFIX)
         ]
-        
+
         X_train = train_df.select(feature_cols).to_numpy()
         y_train = train_df[target_col].to_numpy()
         
