@@ -33,6 +33,17 @@ class FeatureEngineer:
         >>> print(f"PM2.5 lag 1h: {features['pm25_lag_1h']}")
     """
 
+    # Canonical weather field names plus legacy aliases. Older fixtures and
+    # pre-migration data stored wind speed in m/s. Production records use km/h.
+    WEATHER_FIELD_ALIASES = {
+        "wind_speed_kmh": ("wind_speed_kmh", "wind_speed_ms"),
+    }
+
+    @classmethod
+    def _weather_field_names(cls, field_name: str) -> Tuple[str, ...]:
+        """Return the preferred field name followed by any legacy aliases."""
+        return cls.WEATHER_FIELD_ALIASES.get(field_name, (field_name,))
+
     # Feature version for reproducibility
     FEATURE_VERSION = "1.0.0"
 
@@ -309,7 +320,7 @@ class FeatureEngineer:
         weather_vars = [
             ("temperature_c", "temp_lag_1h"),
             ("humidity_pct", "humidity_lag_1h"),
-            ("wind_speed_ms", "wind_speed_lag_1h"),
+            ("wind_speed_kmh", "wind_speed_lag_1h"),
             ("pressure_hpa", "pressure_lag_1h"),
             ("wind_direction_deg", "wind_direction_deg_lag_1h"),
         ]
@@ -317,9 +328,13 @@ class FeatureEngineer:
         for var_name, feature_name in weather_vars:
             lag_time = target_time - timedelta(hours=1)
 
-            value = self._get_hourly_fact(
-                weather_facts, location_id, None, lag_time, var_name
-            )
+            value = None
+            for field_name in self._weather_field_names(var_name):
+                value = self._get_hourly_fact(
+                    weather_facts, location_id, None, lag_time, field_name
+                )
+                if value is not None:
+                    break
 
             if value is None:
                 # Try forward-fill
@@ -362,7 +377,7 @@ class FeatureEngineer:
         weather_vars = [
             ("temperature_c", "temp_rolling_mean"),
             ("humidity_pct", "humidity_rolling_mean"),
-            ("wind_speed_ms", "wind_speed_rolling_mean"),
+            ("wind_speed_kmh", "wind_speed_rolling_mean"),
             ("pressure_hpa", "pressure_rolling_mean"),
         ]
 
@@ -375,7 +390,10 @@ class FeatureEngineer:
 
                 mean_val = self._calculate_mean(values)
                 if mean_val is None and citywide_baseline:
-                    mean_val = citywide_baseline.get(f"{var_name}_mean")
+                    for field_name in self._weather_field_names(var_name):
+                        mean_val = citywide_baseline.get(f"{field_name}_mean")
+                        if mean_val is not None:
+                            break
                     imputation_count += 1
 
                 features[feature_name] = mean_val
@@ -544,9 +562,13 @@ class FeatureEngineer:
 
         for i in range(window_hours):
             hour_time = target_time - timedelta(hours=i + 1)
-            value = self._get_hourly_fact(
-                facts_dict, location_id, None, hour_time, field_name
-            )
+            value = None
+            for candidate in self._weather_field_names(field_name):
+                value = self._get_hourly_fact(
+                    facts_dict, location_id, None, hour_time, candidate
+                )
+                if value is not None:
+                    break
             if value is not None:
                 values.append(value)
 
@@ -630,17 +652,19 @@ class FeatureEngineer:
         # Try forward-fill
         for i in range(1, max_fill_hours + 1):
             fill_time = target_hour - timedelta(hours=i)
-            value = self._get_hourly_fact(
-                facts_dict, location_id, None, fill_time, field_name
-            )
-            if value is not None:
-                return value, True
+            for candidate in self._weather_field_names(field_name):
+                value = self._get_hourly_fact(
+                    facts_dict, location_id, None, fill_time, candidate
+                )
+                if value is not None:
+                    return value, True
 
         # Fall back to city-wide baseline
         if citywide_baseline:
-            value = citywide_baseline.get(f"{field_name}_mean")
-            if value is not None:
-                return value, True
+            for candidate in self._weather_field_names(field_name):
+                value = citywide_baseline.get(f"{candidate}_mean")
+                if value is not None:
+                    return value, True
 
         return None, False
 
