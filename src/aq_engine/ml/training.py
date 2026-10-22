@@ -68,10 +68,11 @@ class ModelTrainer:
                     "temp_",
                     "humidity_",
                     "wind_",
+                    "pressure_",
                     "hour_",
                     "day_",
-                    "month_",
-                    "season_",
+                    "month",
+                    "season",
                     "is_",
                 )
             )
