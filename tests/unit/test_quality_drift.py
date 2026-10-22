@@ -104,3 +104,49 @@ class TestSensorDriftValidator:
         assert flagged
         assert any(record.get("station_id") == "stn_drift" for record in flagged)
         assert any(record.get("quality_flag") == "DRIFT_DETECTED" for record in flagged)
+
+    @staticmethod
+    def _series(station_id, step, hours=6):
+        base = datetime(2026, 8, 15, 0, 0, tzinfo=UTC)
+        return [
+            {
+                "station_id": station_id,
+                "pollutant": "pm25",
+                "value": 10.0 + step * i,
+                "observed_at": base + timedelta(hours=i),
+            }
+            for i in range(hours)
+        ]
+
+    def test_nan_reading_at_one_neighbor_does_not_hide_drift(self):
+        v = SensorDriftValidator(min_points=6, slope_threshold=0.05, neighbor_deviation=0.2)
+        noisy_neighbor = self._series("st3", 0.0)
+        noisy_neighbor[-1]["value"] = float("nan")
+
+        flagged = v.flag_records(
+            self._series("st1", 1.0) + self._series("st2", 0.0) + noisy_neighbor
+        )
+
+        # st3 is left out of the neighbour average instead of turning it into NaN.
+        assert len(flagged) == 6
+        assert {r["station_id"] for r in flagged} == {"st1"}
+
+    def test_record_without_timestamp_does_not_crash_sorting(self):
+        v = SensorDriftValidator(min_points=6, slope_threshold=0.05, neighbor_deviation=0.2)
+        records = self._series("st1", 1.0) + self._series("st2", 0.0)
+        records.append({"station_id": "st2", "pollutant": "pm25", "value": 10.0})
+
+        flagged = v.flag_records(records)
+
+        assert len(flagged) == 6
+        assert {r["station_id"] for r in flagged} == {"st1"}
+
+    def test_iso_string_and_naive_timestamps_sort_with_aware_ones(self):
+        v = SensorDriftValidator(min_points=6, slope_threshold=0.05, neighbor_deviation=0.2)
+        records = self._series("st1", 1.0) + self._series("st2", 0.0)
+        records[0]["observed_at"] = "2026-08-15T00:00:00Z"
+        records[1]["observed_at"] = datetime(2026, 8, 15, 1, 0)
+
+        flagged = v.flag_records(records)
+
+        assert len(flagged) == 6
