@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from math import isnan
 from typing import Any, Iterable, List
+
+from aq_engine.common import ensure_utc
 
 
 class SensorDriftValidator:
@@ -42,6 +44,44 @@ class SensorDriftValidator:
             return 0.0
         return numerator / denominator
 
+    @staticmethod
+    def _record_time(record: dict[str, Any]) -> datetime | None:
+        """Return an aware UTC timestamp, or None when one cannot be parsed."""
+        value = record.get("observed_at")
+        if isinstance(value, str):
+            try:
+                value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        if not isinstance(value, datetime):
+            return None
+        return ensure_utc(value)
+
+    def _prepare_series(
+        self, series: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Sort a station series and restrict it to the configured window.
+
+        The window is anchored to the latest observation in the series rather
+        than wall-clock time so historical backfills remain deterministic.
+        Records without a usable timestamp are kept only when the series has no
+        timestamps at all.
+        """
+        timed = [(self._record_time(record), record) for record in series]
+        timestamps = [timestamp for timestamp, _ in timed if timestamp is not None]
+
+        if timestamps:
+            cutoff = max(timestamps) - timedelta(hours=self.window_hours)
+            timed = [
+                (timestamp, record)
+                for timestamp, record in timed
+                if timestamp is not None and timestamp >= cutoff
+            ]
+            timed.sort(key=lambda item: item[0])
+            return [record for _, record in timed]
+
+        return list(series)
+
     def flag_records(self, records: Iterable[dict[str, Any]]) -> List[dict[str, Any]]:
         """Return records flagged as DRIFT_DETECTED."""
         grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
@@ -57,13 +97,15 @@ class SensorDriftValidator:
         for (station_id, pollutant), series in grouped.items():
             station_to_pollutant[station_id].append(pollutant)
 
-        for (station_id, pollutant), series in grouped.items():
-            series.sort(key=lambda r: r.get("observed_at") or datetime.min)
+        prepared = {
+            key: self._prepare_series(series) for key, series in grouped.items()
+        }
 
+        for (station_id, pollutant), series in prepared.items():
             if len(series) < self.min_points:
                 continue
 
-            window = series[-self.min_points :]
+            window = series
             values = []
             for record in window:
                 value = record.get("value")
@@ -86,16 +128,13 @@ class SensorDriftValidator:
 
             # Compare station trend to nearby stations for same pollutant.
             neighbors = []
-            for (other_station, other_pollutant), other_series in grouped.items():
+            for (other_station, other_pollutant), other_series in prepared.items():
                 if other_station == station_id or other_pollutant != pollutant:
                     continue
-                other_series_sorted = sorted(
-                    other_series,
-                    key=lambda r: r.get("observed_at") or datetime.min,
-                )
+                other_series_sorted = other_series
                 if len(other_series_sorted) < self.min_points:
                     continue
-                other_window = other_series_sorted[-self.min_points :]
+                other_window = other_series_sorted
                 other_values = []
                 for record in other_window:
                     value = record.get("value")
