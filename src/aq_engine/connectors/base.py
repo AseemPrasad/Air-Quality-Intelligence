@@ -347,9 +347,45 @@ class BaseConnector(abc.ABC):
                     context={"source": self.config.source_name},
                 ) from e
 
-        except IngestionFailed:
-            # Already handled or permanent error
+        except IngestionFailed as e:
+            # Connectors translate requests exceptions into IngestionFailed
+            # before this layer sees them. Inspect the cause chain and the
+            # status code context so the configured retry policy still applies.
+            if self._is_transient_failure(e) and attempt < self.config.retry.max_attempts:
+                delay = self._get_retry_delay(attempt)
+                logger.warning(
+                    f"Transient ingestion failure (attempt {attempt + 1}), "
+                    f"retrying in {delay:.1f}s: {e}"
+                )
+                time.sleep(delay)
+                return self._fetch_with_retry(start_time, end_time, attempt=attempt + 1)
             raise
+
+    def _is_transient_failure(self, error: IngestionFailed) -> bool:
+        """Return True when a wrapped ingestion error is retryable.
+
+        Args:
+            error: Ingestion failure raised by a connector.
+
+        Returns:
+            True for connection/timeout causes and configured transient
+            HTTP status codes.
+        """
+        status_code = error.context.get("status_code")
+        if status_code is not None:
+            try:
+                if int(status_code) in self.config.retry.transient_status_codes:
+                    return True
+            except (TypeError, ValueError):
+                pass
+
+        cause = error.__cause__ or error.cause
+        while cause is not None:
+            if isinstance(cause, (requests.Timeout, requests.ConnectionError)):
+                return True
+            cause = getattr(cause, "__cause__", None)
+
+        return False
 
     def _get_retry_delay(self, attempt: int) -> float:
         """Calculate retry delay with exponential backoff and jitter.
