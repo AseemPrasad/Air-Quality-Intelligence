@@ -77,6 +77,7 @@ class Deduplicator:
         unique_records = []
         duplicates = []
         affected_times = set()
+        seen_keys = set()
 
         for record in records:
             # Generate measurement key
@@ -88,13 +89,14 @@ class Deduplicator:
                 observed_at=record.get("observed_at"),
             )
 
-            if key in existing_keys:
+            if key in existing_keys or key in seen_keys:
                 # Duplicate found
                 duplicates.append((record, key))
                 affected_times.add(record.get("observed_at"))
             else:
                 # New record
                 unique_records.append(record)
+                seen_keys.add(key)
                 affected_times.add(record.get("observed_at"))
 
         # Log deduplication results
@@ -135,6 +137,7 @@ class Deduplicator:
         unique_records = []
         duplicates = []
         affected_times = set()
+        seen_keys = set()
 
         for record in records:
             # Generate weather key
@@ -144,11 +147,12 @@ class Deduplicator:
                 observed_at=record.get("observed_at"),
             )
 
-            if key in existing_keys:
+            if key in existing_keys or key in seen_keys:
                 duplicates.append((record, key))
                 affected_times.add(record.get("observed_at"))
             else:
                 unique_records.append(record)
+                seen_keys.add(key)
                 affected_times.add(record.get("observed_at"))
 
         if duplicates:
