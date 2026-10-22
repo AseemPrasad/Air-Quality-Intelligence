@@ -566,28 +566,46 @@ async def get_forecast(
     generated_time = datetime.now(timezone.utc)
     forecasts = []
 
-    # Parse horizons
+    # Parse and validate horizons before generating any points.
     horizon_map = {"1h": 60, "3h": 180, "6h": 360}
-    for h in horizon.split(","):
-        h = h.strip()
-        if h in horizon_map:
-            minutes = horizon_map[h]
-            target_time = generated_time + timedelta(minutes=minutes)
+    requested_horizons = [
+        token.strip().lower() for token in horizon.split(",") if token.strip()
+    ]
+    if not requested_horizons:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one horizon is required",
+        )
 
-            # Calculate confidence based on horizon (closer = more confident)
-            confidence = max(0.65, 1.0 - (minutes / 1000))
+    unsupported = [token for token in requested_horizons if token not in horizon_map]
+    if unsupported:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Unsupported horizon(s): {', '.join(unsupported)}. "
+                f"Supported values: {', '.join(horizon_map)}"
+            ),
+        )
 
-            forecasts.append(
-                ForecastPoint(
-                    horizon_minutes=minutes,
-                    target_time=target_time,
-                    predicted_pm25=70.0 + (minutes / 100),
-                    lower_bound=60.0 + (minutes / 100),
-                    upper_bound=80.0 + (minutes / 100),
-                    confidence=confidence,
-                    model_version="2026-08-15_hgb",
-                )
+    unique_horizons = list(dict.fromkeys(requested_horizons))
+    for h in unique_horizons:
+        minutes = horizon_map[h]
+        target_time = generated_time + timedelta(minutes=minutes)
+
+        # Calculate confidence based on horizon (closer = more confident)
+        confidence = max(0.65, 1.0 - (minutes / 1000))
+
+        forecasts.append(
+            ForecastPoint(
+                horizon_minutes=minutes,
+                target_time=target_time,
+                predicted_pm25=70.0 + (minutes / 100),
+                lower_bound=60.0 + (minutes / 100),
+                upper_bound=80.0 + (minutes / 100),
+                confidence=confidence,
+                model_version="2026-08-15_hgb",
             )
+        )
 
     logger.info(f"Forecast generated for {location_id} with {len(forecasts)} horizons")
 
