@@ -510,8 +510,10 @@ class Database:
             session.commit()
         except IntegrityError as e:
             session.rollback()
-            # Don't raise; let caller handle idempotency
-            logger.debug(f"Integrity constraint violation (expected for idempotency): {e}")
+            raise DatabaseError(
+                f"Integrity constraint violation: {str(e)}",
+                context={"error_type": type(e).__name__, "integrity_error": True},
+            ) from e
         except SQLAlchemyError as e:
             session.rollback()
             raise DatabaseError(
