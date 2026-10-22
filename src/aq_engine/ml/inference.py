@@ -75,6 +75,7 @@ class PredictionEngine:
 
         for horizon_minutes in horizons:
             target_time = reference_time + timedelta(minutes=horizon_minutes)
+            features: Optional[Dict[str, Any]] = None
 
             try:
                 # Generate features (no future leakage)
@@ -95,7 +96,7 @@ class PredictionEngine:
                 else:
                     logger.warning("No model available, using baseline forecast")
                     pred_dict = self._predict_with_baseline(
-                        location_id, target_time, features
+                        location_id, target_time, horizon_minutes, features or {}
                     )
 
                 predictions.append(pred_dict)
@@ -107,7 +108,7 @@ class PredictionEngine:
                 # Fallback to baseline
                 try:
                     pred_dict = self._predict_with_baseline(
-                        location_id, target_time, features
+                        location_id, target_time, horizon_minutes, features or {}
                     )
                     predictions.append(pred_dict)
                 except Exception as e2:
@@ -229,6 +230,7 @@ class PredictionEngine:
         self,
         location_id: str,
         target_time: datetime,
+        horizon_minutes: int,
         features: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Make prediction using baseline forecast.
@@ -236,6 +238,7 @@ class PredictionEngine:
         Args:
             location_id: Location identifier
             target_time: Target time for prediction
+            horizon_minutes: Prediction horizon for this request
             features: Generated feature dict
 
         Returns:
@@ -251,7 +254,7 @@ class PredictionEngine:
             "location_id": location_id,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "target_time": target_time.isoformat(),
-            "horizon_minutes": features.get("horizon_minutes"),
+            "horizon_minutes": horizon_minutes,
             "predicted_pm25": pm25_lag_1h,
             "lower_bound": pm25_lag_1h * 0.9,  # ±10% bounds
             "upper_bound": pm25_lag_1h * 1.1,
