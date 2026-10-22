@@ -104,6 +104,25 @@ class ModelTrainer:
             model = RandomForestRegressor(n_estimators=100, max_depth=15, n_jobs=-1, random_state=42)
         elif model_type == "hgb":
             model = HistGradientBoostingRegressor(random_state=42, max_depth=10)
+        elif model_type == "xgboost":
+            try:
+                from xgboost import XGBRegressor
+            except ImportError as exc:
+                raise ImportError(
+                    "xgboost is required for model_type='xgboost'; "
+                    "install the project dependencies"
+                ) from exc
+
+            model = XGBRegressor(
+                n_estimators=100,
+                max_depth=6,
+                learning_rate=0.1,
+                subsample=0.9,
+                colsample_bytree=0.9,
+                objective="reg:squarederror",
+                random_state=42,
+                n_jobs=-1,
+            )
         else:
             raise ValueError(f"Unknown model type: {model_type}")
 
