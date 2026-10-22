@@ -164,8 +164,8 @@ class ConfigLoader:
                 "url": os.getenv("DATABASE_URL"),
                 "user": os.getenv("POSTGRES_USER"),
                 "password": os.getenv("POSTGRES_PASSWORD"),
-                "host": os.getenv("DATABASE_HOST"),
-                "port": os.getenv("DATABASE_PORT"),
+                "host": os.getenv("POSTGRES_HOST", os.getenv("DATABASE_HOST")),
+                "port": os.getenv("POSTGRES_PORT", os.getenv("DATABASE_PORT")),
                 "database": os.getenv("POSTGRES_DB"),
             },
             "data": {
