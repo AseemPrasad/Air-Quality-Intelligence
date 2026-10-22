@@ -281,6 +281,24 @@ class TestBaselineEndpoint:
         data = response.json()
         assert data["hour_of_day"] == 15
 
+    def test_baseline_hour_zero_is_midnight(self, client, monkeypatch):
+        """hour=0 asks for midnight; it must not fall back to the current hour."""
+        import aq_engine.api.observations as observations
+
+        class FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 8, 15, 15, 0, tzinfo=timezone.utc)
+
+        monkeypatch.setattr(observations, "datetime", FixedDatetime)
+        response = client.get(
+            "/api/locations/kolkata_001/baseline",
+            params={"hour": 0},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["hour_of_day"] == 0
+
     def test_baseline_custom_month(self, client):
         """Test baseline with custom month."""
         response = client.get(
