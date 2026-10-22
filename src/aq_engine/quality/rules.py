@@ -301,6 +301,15 @@ class WeatherStructuralValidation(ValidationRule):
 class WeatherSemanticValidation(ValidationRule):
     """Validate semantic rules for weather records."""
 
+    @staticmethod
+    def _check_numeric(value: Any, label: str) -> Tuple[bool, List[str]]:
+        """Reject non-numeric and non-finite optional weather values."""
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return False, [f"{label} must be numeric"]
+        if not math.isfinite(value):
+            return False, [f"{label} must be finite"]
+        return True, []
+
     def validate(self, record: dict) -> Tuple[bool, List[str]]:
         """Validate semantic requirements."""
         warnings = []
@@ -308,44 +317,56 @@ class WeatherSemanticValidation(ValidationRule):
         # Humidity must be 0-100%
         humidity = record.get("humidity_pct")
         if humidity is not None:
+            valid, messages = self._check_numeric(humidity, "Humidity")
+            if not valid:
+                return False, messages
             if not (0 <= humidity <= 100):
                 return False, [f"Humidity out of range: {humidity}%"]
 
         # Temperature must be reasonable for Earth
         temperature = record.get("temperature_c")
         if temperature is not None:
+            valid, messages = self._check_numeric(temperature, "Temperature")
+            if not valid:
+                return False, messages
             if not (-60 <= temperature <= 60):
                 return False, [f"Temperature out of reasonable range: {temperature}°C"]
 
         # Wind direction must be 0-360°
         wind_dir = record.get("wind_direction_deg")
         if wind_dir is not None:
-            if isinstance(wind_dir, (int, float)) and not math.isfinite(wind_dir):
-                return False, ["Wind direction must be finite"]
+            valid, messages = self._check_numeric(wind_dir, "Wind direction")
+            if not valid:
+                return False, messages
             if not (0 <= wind_dir <= 360):
                 return False, [f"Wind direction out of range: {wind_dir}°"]
 
         # Wind speed must be non-negative
         wind_speed = record.get("wind_speed_kmh")
         if wind_speed is not None:
-            if isinstance(wind_speed, (int, float)) and not math.isfinite(wind_speed):
-                return False, ["Wind speed must be finite"]
+            valid, messages = self._check_numeric(wind_speed, "Wind speed")
+            if not valid:
+                return False, messages
             if wind_speed < 0:
                 return False, ["Wind speed must be non-negative"]
 
         # Pressure must be reasonable
         pressure = record.get("pressure_hpa")
         if pressure is not None:
-            if isinstance(pressure, (int, float)) and not math.isfinite(pressure):
-                return False, ["Pressure must be finite"]
+            valid, messages = self._check_numeric(pressure, "Pressure")
+            if not valid:
+                return False, messages
             if not (900 <= pressure <= 1100):
                 return False, [f"Pressure out of range: {pressure} hPa"]
 
         # Precipitation must be non-negative
         precipitation = record.get("precipitation_mm")
         if precipitation is not None:
-            if isinstance(precipitation, (int, float)) and not math.isfinite(precipitation):
-                return False, ["Precipitation must be finite"]
+            valid, messages = self._check_numeric(
+                precipitation, "Precipitation"
+            )
+            if not valid:
+                return False, messages
             if precipitation < 0:
                 return False, ["Precipitation must be non-negative"]
 
