@@ -255,11 +255,12 @@ class BaseConnector(abc.ABC):
                 run_metadata.records_written = written_count
                 run_metadata.records_rejected = rejected_count
 
-                # Record successful run
-                self.record_run(run_metadata, success=True)
-
+                # Finalize metadata before persisting the successful run
                 run_metadata.status = "success"
                 run_metadata.finished_at = datetime.now(timezone.utc)
+
+                # Record successful run
+                self.record_run(run_metadata, success=True)
 
                 slog.ingestion_complete(
                     self.config.source_name,
