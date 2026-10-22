@@ -1,19 +1,18 @@
 """FastAPI application for Air Quality Intelligence Platform."""
 
-import logging
-import uuid
-import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Callable
+from pathlib import Path
 
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from contextlib import asynccontextmanager
 
+from aq_engine.api.middleware import global_audit_and_exception_middleware
 from aq_engine.api.observations import router as observations_router
+from aq_engine.common.logger import get_logger, load_logging_config
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Version info
 __version__ = "0.1.0"
@@ -46,6 +45,8 @@ health_status = HealthStatus()
 async def lifespan(app: FastAPI):
     """Manage application startup and shutdown."""
     # Startup
+    Path("data/logs").mkdir(parents=True, exist_ok=True)
+    load_logging_config("configs/logging.yaml")
     logger.info("Starting Air Quality Intelligence Platform...")
 
     try:
@@ -106,55 +107,8 @@ app.add_middleware(
 )
 
 
-# Structured logging middleware
-@app.middleware("http")
-async def logging_middleware(request: Request, call_next: Callable) -> JSONResponse:
-    """Log all requests with structured format."""
-    request_id = str(uuid.uuid4())
-    request.state.request_id = request_id
-
-    start_time = time.time()
-
-    try:
-        response = await call_next(request)
-        duration = time.time() - start_time
-
-        logger.info(
-            f"Request completed",
-            extra={
-                "request_id": request_id,
-                "method": request.method,
-                "path": request.url.path,
-                "status_code": response.status_code,
-                "duration_ms": round(duration * 1000, 2),
-            }
-        )
-
-        # Add request ID to response headers
-        response.headers["X-Request-ID"] = request_id
-        return response
-
-    except Exception as e:
-        duration = time.time() - start_time
-        logger.error(
-            f"Request failed: {str(e)}",
-            extra={
-                "request_id": request_id,
-                "method": request.method,
-                "path": request.url.path,
-                "duration_ms": round(duration * 1000, 2),
-            },
-            exc_info=True,
-        )
-
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={
-                "error": "Internal server error",
-                "request_id": request_id,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            },
-        )
+# Register the same structured audit middleware exercised in isolation by unit tests.
+app.middleware("http")(global_audit_and_exception_middleware)
 
 
 # Exception handler

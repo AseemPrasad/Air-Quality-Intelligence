@@ -12,7 +12,6 @@ This DAG processes historical data in date ranges for backfill scenarios:
 
 import json
 import gc
-import logging
 from datetime import datetime, timedelta, date
 from typing import Any, Dict, List, Tuple
 
@@ -21,7 +20,36 @@ from airflow.operators.dummy import DummyOperator
 from airflow.operators.python import PythonOperator
 from airflow.utils.dates import days_ago
 
-logger = logging.getLogger(__name__)
+from aq_engine.common.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+def _log_task_started(context: Dict[str, Any]) -> None:
+    """Log a correlated start event for every Airflow task."""
+    task = context.get("task")
+    task_instance = context.get("task_instance")
+    task_id = getattr(task, "task_id", None) or getattr(
+        task_instance, "task_id", "unknown"
+    )
+    dag_id = getattr(context.get("dag"), "dag_id", None) or getattr(
+        task_instance, "dag_id", None
+    )
+    dag_run_id = context.get("run_id") or getattr(
+        context.get("dag_run"), "run_id", "manual"
+    )
+
+    logger.info(
+        f"Starting Airflow task {task_id}",
+        extra={
+            "event": "dag_task_started",
+            "request_id": dag_run_id,
+            "operation": "airflow_task",
+            "source": "airflow",
+            "dag_id": dag_id,
+            "task_id": task_id,
+        },
+    )
 
 # Default arguments
 default_args = {
@@ -29,6 +57,7 @@ default_args = {
     "retries": 0,  # No retries during backfill (manual retry instead)
     "email_on_failure": True,
     "execution_timeout": timedelta(hours=6),
+    "on_execute_callback": _log_task_started,
 }
 
 # Create DAG with parameters

@@ -4,7 +4,7 @@ disable_existing_loggers: false
 formatters:
   json:
     (): pythonjsonlogger.jsonlogger.JsonFormatter
-    fmt: '%(timestamp)s %(level)s %(name)s %(operation)s %(source)s %(status)s %(message)s'
+    fmt: '%(asctime)s %(levelname)s %(name)s %(event)s %(request_id)s %(method)s %(path)s %(status)s %(duration_seconds)s %(operation)s %(source)s %(exception_type)s %(error)s %(message)s'
     rename_fields:
       asctime: timestamp
       levelname: level
