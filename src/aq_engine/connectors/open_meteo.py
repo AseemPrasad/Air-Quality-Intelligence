@@ -12,7 +12,7 @@ import logging
 import math
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urljoin
+from urllib.parse import urlparse, urlunparse
 
 import requests
 
@@ -194,6 +194,32 @@ class OpenMeteoConnector(BaseConnector):
         logger.info(f"Fetched {len(all_weather_data)} weather records from Open-Meteo")
         return response
 
+    def _endpoint_url(self, historical: bool) -> str:
+        """Build the API endpoint URL without dropping the base path.
+
+        ``urljoin`` treats an absolute path (one beginning with ``/``) as a
+        replacement for the base path. Resolving the endpoint by hand keeps
+        version segments such as ``/v1`` intact. Open-Meteo serves historical
+        data from a separate host, so that host is selected when the default
+        forecast API is configured.
+
+        Args:
+            historical: Whether the historical archive endpoint is needed.
+
+        Returns:
+            Fully qualified endpoint URL.
+        """
+        base_url = self.config.base_url.rstrip("/")
+        parsed = urlparse(base_url)
+
+        if historical:
+            if parsed.hostname == "api.open-meteo.com":
+                parsed = parsed._replace(netloc="archive-api.open-meteo.com")
+                base_url = urlunparse(parsed)
+            return f"{base_url}/archive"
+
+        return f"{base_url}/forecast"
+
     def _fetch_location_weather(
         self,
         station_id: str,
@@ -223,12 +249,7 @@ class OpenMeteoConnector(BaseConnector):
         now = datetime.now(timezone.utc)
 
         # Determine which endpoint to use
-        if end_time <= now:
-            # Historical data
-            url = urljoin(self.config.base_url, "/archive")
-        else:
-            # Forecast data
-            url = urljoin(self.config.base_url, "/forecast")
+        url = self._endpoint_url(historical=end_time <= now)
 
         # Build query parameters
         params = {
