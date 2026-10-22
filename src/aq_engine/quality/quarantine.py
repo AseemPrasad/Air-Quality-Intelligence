@@ -159,11 +159,17 @@ class QuarantineManager:
         """
         if record_type == "suspicious":
             search_path = self.quarantine_root / source / "suspicious"
+            files = search_path.glob("**/*.jsonl")
         else:
             search_path = self.quarantine_root / source
+            files = (
+                filepath
+                for filepath in search_path.glob("**/*.jsonl")
+                if "suspicious" not in filepath.parts
+            )
 
         records = []
-        for filepath in search_path.glob("**/*.jsonl"):
+        for filepath in files:
             try:
                 with open(filepath, "r") as f:
                     for line in f:
