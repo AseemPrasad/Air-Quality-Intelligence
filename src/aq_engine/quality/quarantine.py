@@ -64,21 +64,16 @@ class QuarantineManager:
             }
             enriched_records.append(quarantined)
 
-        # Get observed_at or ingested_at for partitioning
-        timestamp = enriched_records[0].get("observed_at") or enriched_records[0].get("ingested_at")
-        if isinstance(timestamp, str):
-            timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-
-        # Write to quarantine partitioned by source + date
-        partition_path = date_partition_path(timestamp)
-        target_dir = self.quarantine_root / source / partition_path
-
-        # Write as JSONL for investigation (more human-readable)
-        self._write_quarantine_jsonl(target_dir, enriched_records, source)
+        # Write each record under its own observation date. A batch can span
+        # multiple dates during late-arrival or backfill processing.
+        grouped = self._group_by_partition(enriched_records)
+        for partition_path, partition_records in grouped.items():
+            target_dir = self.quarantine_root / source / partition_path
+            self._write_quarantine_jsonl(target_dir, partition_records, source)
 
         logger.info(
             f"Quarantined {len(enriched_records)} invalid {record_type} records "
-            f"from {source} to {target_dir}"
+            f"from {source} across {len(grouped)} partition(s)"
         )
 
     def quarantine_suspicious_records(
@@ -108,19 +103,44 @@ class QuarantineManager:
             }
             enriched_records.append(quarantined)
 
-        timestamp = enriched_records[0].get("observed_at") or enriched_records[0].get("ingested_at")
-        if isinstance(timestamp, str):
-            timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-
-        partition_path = date_partition_path(timestamp)
-        target_dir = self.quarantine_root / source / "suspicious" / partition_path
-
-        self._write_quarantine_jsonl(target_dir, enriched_records, source)
+        grouped = self._group_by_partition(enriched_records)
+        for partition_path, partition_records in grouped.items():
+            target_dir = (
+                self.quarantine_root / source / "suspicious" / partition_path
+            )
+            self._write_quarantine_jsonl(target_dir, partition_records, source)
 
         logger.info(
             f"Quarantined {len(enriched_records)} suspicious {record_type} records "
-            f"from {source} to {target_dir}"
+            f"from {source} across {len(grouped)} partition(s)"
         )
+
+    @staticmethod
+    def _group_by_partition(records: List[dict]) -> Dict[str, List[dict]]:
+        """Group quarantined records by their UTC observation date.
+
+        Records without a usable timestamp are placed in the current UTC
+        partition so they are not lost.
+        """
+        grouped: Dict[str, List[dict]] = {}
+
+        for record in records:
+            timestamp = record.get("observed_at") or record.get("ingested_at")
+            if isinstance(timestamp, str):
+                try:
+                    timestamp = datetime.fromisoformat(
+                        timestamp.replace("Z", "+00:00")
+                    )
+                except ValueError:
+                    timestamp = None
+
+            if timestamp is None:
+                timestamp = datetime.now(timezone.utc)
+
+            partition_path = date_partition_path(timestamp)
+            grouped.setdefault(partition_path, []).append(record)
+
+        return grouped
 
     def _write_quarantine_jsonl(
         self, target_dir: Path, records: List[dict], source: str
