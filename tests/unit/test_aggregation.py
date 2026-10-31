@@ -337,6 +337,43 @@ class TestExpectedObservations:
         )
         assert expected == 2
 
+    @pytest.mark.parametrize(
+        "interval_minutes, expected_per_station",
+        [
+            (45, 32),   # 1440 / 45; per-hour flooring gave 24
+            (90, 16),   # per-hour flooring gave 0
+            (120, 12),  # per-hour flooring gave 0
+        ],
+    )
+    def test_expected_observations_interval_not_dividing_an_hour(
+        self, interval_minutes, expected_per_station
+    ):
+        """Intervals that don't divide 60 evenly must not be floored per hour."""
+        agg = LocationAggregator(measurement_interval_minutes=interval_minutes)
+        expected = agg._calculate_expected_observations(
+            station_count=2, time_window_hours=24
+        )
+        assert expected == expected_per_station * 2
+
+    def test_full_coverage_with_two_hour_interval(self):
+        """A station delivering every 2-hourly reading has 100% coverage, not 0%."""
+        agg = LocationAggregator(measurement_interval_minutes=120)
+        with patch.object(agg, "_get_location_stations", return_value=["s1"]):
+            with patch.object(
+                agg,
+                "_get_station_hourly_values",
+                return_value=([50.0] * 12, {"valid": 12, "suspicious": 0}),
+            ):
+                result = agg.aggregate_stations_to_location(
+                    location_id="loc",
+                    pollutant="pm25",
+                    time_window_hours=24,
+                    end_time=datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc),
+                )
+
+        assert result["expected_observation_count"] == 12
+        assert result["coverage_pct"] == 100.0
+
 
 class TestBatchAggregation:
     """Test batch aggregation of multiple pollutants."""
