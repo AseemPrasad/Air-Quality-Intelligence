@@ -258,8 +258,12 @@ class LocationAggregator:
     ) -> int:
         """Calculate expected observation count.
 
-        Expected = (observations per hour per station) * station_count * hours
-        = (60 / interval_minutes) * station_count * time_window_hours
+        Expected = (window minutes // interval_minutes) * station_count
+        = (time_window_hours * 60 // interval_minutes) * station_count
+
+        The window is divided as a whole rather than per hour: flooring
+        ``60 // interval_minutes`` first gave 0 for intervals over an hour and
+        under-counted intervals that don't divide 60 (45 min -> 1 per hour).
 
         Args:
             station_count: Number of stations.
@@ -268,9 +272,9 @@ class LocationAggregator:
         Returns:
             Expected observation count.
         """
-        obs_per_hour_per_station = 60 // self.measurement_interval_minutes
-        expected = obs_per_hour_per_station * station_count * time_window_hours
-        return expected
+        window_minutes = time_window_hours * 60
+        obs_per_station = int(window_minutes // self.measurement_interval_minutes)
+        return obs_per_station * station_count
 
     @staticmethod
     def _percentile(sorted_values: List[float], p: float) -> float:
