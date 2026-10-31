@@ -82,11 +82,8 @@ orchestration = [
     "apache-airflow-providers-postgres==5.10.0",
 ]
 
-[tool.setuptools]
-packages = ["aq_engine"]
-
-[tool.setuptools.package-dir]
-"" = "src"
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.ruff]
 line-length = 100

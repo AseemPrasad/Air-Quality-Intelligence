@@ -17,17 +17,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user for build
-RUN groupadd -r aqworker && useradd -r -g aqworker aqworker
+# Create non-root user for build (-m: pip --user installs into ~/.local)
+RUN groupadd -r aqworker && useradd -r -m -g aqworker aqworker
 
 WORKDIR /build
 RUN chown -R aqworker:aqworker /build
 
 USER aqworker
 
-# Copy and install dependencies
-COPY pyproject.toml ./
-RUN pip install --user --no-warn-script-location -e .
+# Copy and install the package with its dependencies. Not editable: an
+# editable install points back at /build/src, which the runtime stage drops.
+COPY --chown=aqworker:aqworker pyproject.toml README.md ./
+COPY --chown=aqworker:aqworker src/ ./src/
+RUN pip install --user --no-warn-script-location .
 
 # ============================================================================
 # RUNTIME STAGE: Minimal production image
@@ -62,7 +64,7 @@ RUN chown -R aqworker:aqworker /app
 USER aqworker
 
 # Copy Python dependencies from builder
-COPY --from=builder --chown=aqworker:aqworker /root/.local /home/aqworker/.local
+COPY --from=builder --chown=aqworker:aqworker /home/aqworker/.local /home/aqworker/.local
 
 # Copy application source
 COPY --chown=aqworker:aqworker src/ /app/src/
