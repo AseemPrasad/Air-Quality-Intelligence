@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import polars as pl
 import pytest
+from aq_engine.analytics.anomaly import AnomalyDetector, AnomalySeverity
 from aq_engine.analytics.baselines import BaselineCalculator
 
 
@@ -142,3 +143,47 @@ class TestBaselineComputation:
         assert saved_path.exists()
         assert calculator.get_baseline("loc_1", "pm25", 8, 10) is None
         assert calculator._read_raw_data("loc_1", "pm25", date(2026, 1, 1), date(2026, 1, 2)) == []
+
+
+class TestBaselineConsumerContract:
+    """Baseline rows must be usable by the components that consume them."""
+
+    @pytest.fixture
+    def baseline_row(self, calculator):
+        records = [
+            {
+                "observed_at": datetime(2026, 8, 15, 12, 0, tzinfo=UTC),
+                "value": 40.0 + (i % 10),
+            }
+            for i in range(70)
+        ]
+        with patch.object(calculator, "_read_raw_data", return_value=records):
+            df = calculator.compute_hourly_baselines(
+                location_id="kolkata",
+                pollutant="pm25",
+                current_date=date(2026, 8, 15),
+            )
+        return df.to_dicts()[0]
+
+    def test_row_exposes_historical_median(self, baseline_row):
+        assert baseline_row["historical_median"] == baseline_row["median"]
+
+    def test_empty_row_exposes_historical_median(self):
+        row = BaselineCalculator._empty_baseline_row("loc_1", "pm25", 8, 12, "no_data")
+        assert "historical_median" in row
+        assert row["historical_median"] is None
+
+    def test_anomaly_detector_uses_computed_baseline(self, baseline_row):
+        fact = {
+            "location_id": "kolkata",
+            "pollutant": "pm25",
+            "observed_value": 250.0,
+            "hour_start": datetime(2026, 8, 15, 12, 0, tzinfo=UTC),
+        }
+
+        result = AnomalyDetector().detect_anomalies(fact, baseline_row)
+
+        assert result["fallback_used"] is False
+        assert result["baseline_median"] == baseline_row["median"]
+        assert result["robust_z"] is not None
+        assert result["severity"] == AnomalySeverity.EXTREME.value
