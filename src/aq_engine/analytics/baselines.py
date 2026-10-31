@@ -70,7 +70,8 @@ class BaselineCalculator:
         Returns:
             DataFrame with columns:
             - location_id, pollutant, month, hour_of_day
-            - observation_count, median, mad, p50, p75, p90, p95, p99
+            - observation_count, median, historical_median (same value), mad,
+              p50, p75, p90, p95, p99
             - fallback_used, fallback_reason
         """
         if current_date is None:
@@ -277,6 +278,10 @@ class BaselineCalculator:
             "hour_of_day": hour_of_day,
             "observation_count": n,
             "median": median,
+            # AnomalyDetector, FeatureEngineer and the dbt facts mart all read
+            # the baseline median as ``historical_median``. Without it, a
+            # computed baseline is treated as missing.
+            "historical_median": median,
             "mad": mad,
             "p50": p50,
             "p75": p75,
@@ -412,6 +417,7 @@ class BaselineCalculator:
             "hour_of_day": hour_of_day,
             "observation_count": 0,
             "median": None,
+            "historical_median": None,
             "mad": None,
             "p50": None,
             "p75": None,
