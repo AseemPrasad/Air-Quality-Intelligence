@@ -63,8 +63,9 @@ docker-compose*.yml
 
 # Documentation
 docs/
-README.md
 *.md
+# pyproject.toml declares README.md as the package readme, so the build needs it
+!README.md
 
 # CI/CD
 .github/

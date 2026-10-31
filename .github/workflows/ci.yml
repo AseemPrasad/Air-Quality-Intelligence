@@ -119,7 +119,7 @@ jobs:
         id: docker-build
         run: |
           echo "Building Docker images..."
-          docker-compose build --no-cache
+          docker compose build --no-cache
 
       # =========================================================================
       # 11. Summary
