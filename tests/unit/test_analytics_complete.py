@@ -1,418 +1,693 @@
-"""Comprehensive tests for analytics (aggregation, anomaly detection, events)."""
+
+"""Comprehensive unit tests for analytics modules.
+
+Covers anomaly detection, pollution event detection and merging,
+and station health scoring using the actual production classes.
+"""
+
+from datetime import datetime, timedelta, timezone, date
 
 import pytest
-from datetime import datetime, timedelta
-import statistics
+
+from aq_engine.analytics.anomaly import (
+    AnomalyDetector,
+    AnomalySeverity,
+)
+from aq_engine.analytics.events import EventDetector
+from aq_engine.analytics.station_health import (
+    StationHealthScorer,
+    HealthStatus,
+)
 
 
-class TestBaselineCalculation:
-    """Test baseline calculation from historical data."""
-
-    def test_baseline_365_days_valid(self):
-        """Test baseline with 365 days of data is valid."""
-        day_count = 365
-        is_sufficient = day_count >= 365
-
-        assert is_sufficient is True
-
-    def test_baseline_366_days_leap_year(self):
-        """Test baseline with leap year (366 days)."""
-        day_count = 366
-        is_sufficient = day_count >= 365
-
-        assert is_sufficient is True
-
-    def test_baseline_less_than_365_days_insufficient(self):
-        """Test baseline with < 365 days is insufficient."""
-        day_count = 364
-        is_sufficient = day_count >= 365
-
-        assert is_sufficient is False
-
-    def test_baseline_median_calculation(self):
-        """Test baseline median calculation."""
-        values = [40, 50, 55, 60, 65, 70, 80]  # 7 values
-
-        median = statistics.median(values)
-
-        assert median == 60
-
-    def test_baseline_percentile_calculation(self):
-        """Test baseline percentile calculation."""
-        values = list(range(1, 101))  # 1-100
-
-        p50 = statistics.quantiles(values, n=100)[49]  # Median ~50
-        p95 = statistics.quantiles(values, n=100)[94]  # ~95th percentile
-
-        assert p50 > 45 and p50 < 55
-        assert p95 > 90
+@pytest.fixture
+def anomaly_detector():
+    return AnomalyDetector()
 
 
-class TestBaselineFallback:
-    """Test baseline fallback for insufficient data."""
-
-    def test_fallback_30_days_to_weekly(self):
-        """Test 30-day data falls back to weekly baseline."""
-        day_count = 30
-        if day_count >= 365:
-            baseline_type = "daily"
-        elif day_count >= 30:
-            baseline_type = "weekly"
-        else:
-            baseline_type = "none"
-
-        assert baseline_type == "weekly"
-
-    def test_no_fallback_365_days_or_more(self):
-        """Test >= 365 days uses daily baseline (no fallback)."""
-        day_count = 365
-        if day_count >= 365:
-            baseline_type = "daily"
-        else:
-            baseline_type = "weekly"
-
-        assert baseline_type == "daily"
-
-    def test_insufficient_data_no_baseline(self):
-        """Test < 30 days means no baseline."""
-        day_count = 15
-        if day_count >= 365:
-            baseline_type = "daily"
-        elif day_count >= 30:
-            baseline_type = "weekly"
-        else:
-            baseline_type = "none"
-
-        assert baseline_type == "none"
+@pytest.fixture
+def event_detector():
+    return EventDetector()
 
 
-class TestLocationAggregation:
-    """Test aggregation across multiple monitoring stations."""
+@pytest.fixture
+def health_scorer():
+    return StationHealthScorer()
 
-    def test_aggregation_3_stations_median(self):
-        """Test median aggregation across 3 stations."""
-        station_values = [
-            {"station_id": "stn_001", "value": 55.0},
-            {"station_id": "stn_002", "value": 65.5},
-            {"station_id": "stn_003", "value": 60.0},
+
+@pytest.fixture
+def baseline():
+    return {
+        "historical_median": 50.0,
+        "mad": 10.0,
+    }
+
+
+@pytest.fixture
+def hourly_fact():
+    return {
+        "location_id": "kolkata",
+        "pollutant": "pm25",
+        "observed_value": 50.0,
+        "hour_start": datetime(
+            2026, 8, 15, 10, 0, tzinfo=timezone.utc
+        ),
+    }
+
+
+def make_anomaly(hour, severity="HIGH", value=100.0, robust_z=3.0):
+    """Create an anomaly record for event detector tests."""
+    return {
+        "location_id": "kolkata",
+        "pollutant": "pm25",
+        "hour_start": datetime(
+            2026, 8, 15, hour, 0, tzinfo=timezone.utc
+        ).isoformat(),
+        "observed_value": value,
+        "robust_z": robust_z,
+        "severity": severity,
+    }
+
+
+class TestAnomalyDetection:
+    """Test production anomaly detection."""
+
+    def test_normal_value(self, anomaly_detector, hourly_fact, baseline):
+        result = anomaly_detector.detect_anomalies(
+            hourly_fact, baseline
+        )
+
+        assert result["severity"] == AnomalySeverity.NORMAL.value
+        assert result["robust_z"] == 0.0
+        assert result["fallback_used"] is False
+
+    def test_elevated_anomaly(self, anomaly_detector, hourly_fact, baseline):
+        hourly_fact["observed_value"] = 50.0 + (
+            2.5 * anomaly_detector.MAD_CONSTANT * 10.0
+        )
+
+        result = anomaly_detector.detect_anomalies(
+            hourly_fact, baseline
+        )
+
+        assert result["severity"] == AnomalySeverity.ELEVATED.value
+        assert result["robust_z"] == pytest.approx(2.5)
+
+    def test_high_anomaly(self, anomaly_detector, hourly_fact, baseline):
+        hourly_fact["observed_value"] = 50.0 + (
+            3.5 * anomaly_detector.MAD_CONSTANT * 10.0
+        )
+
+        result = anomaly_detector.detect_anomalies(
+            hourly_fact, baseline
+        )
+
+        assert result["severity"] == AnomalySeverity.HIGH.value
+        assert result["robust_z"] == pytest.approx(3.5)
+
+    def test_severe_anomaly(self, anomaly_detector, hourly_fact, baseline):
+        hourly_fact["observed_value"] = 50.0 + (
+            4.5 * anomaly_detector.MAD_CONSTANT * 10.0
+        )
+
+        result = anomaly_detector.detect_anomalies(
+            hourly_fact, baseline
+        )
+
+        assert result["severity"] == AnomalySeverity.SEVERE.value
+
+    def test_extreme_anomaly(self, anomaly_detector, hourly_fact, baseline):
+        hourly_fact["observed_value"] = 50.0 + (
+            5.5 * anomaly_detector.MAD_CONSTANT * 10.0
+        )
+
+        result = anomaly_detector.detect_anomalies(
+            hourly_fact, baseline
+        )
+
+        assert result["severity"] == AnomalySeverity.EXTREME.value
+
+    def test_negative_anomaly_uses_absolute_z_score(
+        self, anomaly_detector, hourly_fact, baseline
+    ):
+        hourly_fact["observed_value"] = 50.0 - (
+            3.5 * anomaly_detector.MAD_CONSTANT * 10.0
+        )
+
+        result = anomaly_detector.detect_anomalies(
+            hourly_fact, baseline
+        )
+
+        assert result["severity"] == AnomalySeverity.HIGH.value
+        assert result["robust_z"] < 0
+
+    def test_zero_mad_constant_history(
+        self, anomaly_detector, hourly_fact
+    ):
+        constant_baseline = {
+            "historical_median": 50.0,
+            "mad": 0.0,
+        }
+
+        result = anomaly_detector.detect_anomalies(
+            hourly_fact, constant_baseline
+        )
+
+        assert result["severity"] == AnomalySeverity.NORMAL.value
+        assert result["robust_z"] == 0.0
+
+    def test_zero_mad_detects_deviation(
+        self, anomaly_detector, hourly_fact
+    ):
+        hourly_fact["observed_value"] = 80.0
+
+        constant_baseline = {
+            "historical_median": 50.0,
+            "mad": 0.0,
+        }
+
+        result = anomaly_detector.detect_anomalies(
+            hourly_fact, constant_baseline
+        )
+
+        assert result["severity"] == AnomalySeverity.HIGH.value
+        assert result["robust_z"] == 3.0
+
+    def test_missing_baseline_uses_citywide_fallback(
+        self, anomaly_detector, hourly_fact
+    ):
+        fallback = {
+            ("citywide", "pm25"): {
+                "historical_median": 50.0,
+                "mad": 10.0,
+            }
+        }
+
+        result = anomaly_detector.detect_anomalies(
+            hourly_fact,
+            baseline=None,
+            fallback_baselines=fallback,
+        )
+
+        assert result["fallback_used"] is True
+        assert result["fallback_reason"] == "citywide_fallback"
+        assert result["baseline_median"] == 50.0
+
+    def test_missing_baseline_uses_recent_fallback(
+        self, anomaly_detector, hourly_fact
+    ):
+        fallback = {
+            ("recent_7d", "pm25"): {
+                "historical_median": 40.0,
+                "mad": 5.0,
+            }
+        }
+
+        result = anomaly_detector.detect_anomalies(
+            hourly_fact,
+            baseline=None,
+            fallback_baselines=fallback,
+        )
+
+        assert result["fallback_used"] is True
+        assert result["fallback_reason"] == "recent_7day_fallback"
+        assert result["baseline_median"] == 40.0
+
+    def test_no_baseline_returns_safe_result(
+        self, anomaly_detector, hourly_fact
+    ):
+        result = anomaly_detector.detect_anomalies(
+            hourly_fact,
+            baseline=None,
+            fallback_baselines=None,
+        )
+
+        assert result["severity"] == AnomalySeverity.NORMAL.value
+        assert result["robust_z"] is None
+        assert result["baseline_median"] is None
+        assert result["fallback_used"] is True
+        assert result["fallback_reason"] == "no_baseline_available"
+
+    def test_batch_detection(
+        self, anomaly_detector, hourly_fact, baseline
+    ):
+        facts = [hourly_fact.copy(), hourly_fact.copy()]
+        facts[1]["observed_value"] = 100.0
+
+        baselines = {
+            ("kolkata", "pm25"): baseline,
+        }
+
+        results = anomaly_detector.detect_batch(
+            facts,
+            baselines,
+        )
+
+        assert len(results) == 2
+        assert results[0]["severity"] == "NORMAL"
+        assert results[1]["severity"] == "HIGH"
+
+    def test_anomaly_summary(self, anomaly_detector):
+        results = [
+            {"severity": "NORMAL"},
+            {"severity": "HIGH"},
+            {"severity": "EXTREME"},
+            {"severity": "ELEVATED"},
         ]
 
-        values = [s["value"] for s in station_values]
-        median = statistics.median(values)
+        summary = anomaly_detector.get_anomaly_summary(results)
 
-        assert median == 60.0
+        assert summary["total_checked"] == 4
+        assert summary["total_anomalies"] == 3
+        assert summary["normal"] == 1
+        assert summary["high"] == 1
+        assert summary["extreme"] == 1
+        assert summary["elevated"] == 1
+        assert summary["anomaly_rate"] == pytest.approx(0.75)
 
-    def test_aggregation_multiple_locations(self):
-        """Test aggregation across multiple locations."""
-        locations_data = {
-            "kolkata_001": [60, 65, 70],
-            "delhi_001": [55, 60, 65],
-        }
+    def test_empty_anomaly_summary(self, anomaly_detector):
+        summary = anomaly_detector.get_anomaly_summary([])
 
-        location_medians = {
-            loc: statistics.median(vals)
-            for loc, vals in locations_data.items()
-        }
-
-        assert location_medians["kolkata_001"] == 65
-        assert location_medians["delhi_001"] == 60
-
-    def test_aggregation_handles_null_values(self):
-        """Test aggregation skips null values."""
-        station_values = [55.0, None, 65.5, 60.0]
-
-        # Filter nulls
-        valid_values = [v for v in station_values if v is not None]
-        median = statistics.median(valid_values)
-
-        assert median == 60.0
-        assert len(valid_values) == 3
-
-
-class TestAnomalyDetectionZScore:
-    """Test anomaly detection using z-score."""
-
-    def test_normal_value_z_less_than_2(self):
-        """Test normal value (z < 2) is NORMAL."""
-        mean = 50
-        std = 10
-        value = 55  # z = 0.5
-
-        z_score = (value - mean) / std
-
-        if z_score < 2:
-            severity = "NORMAL"
-        elif z_score < 3:
-            severity = "LOW"
-        else:
-            severity = "HIGH"
-
-        assert severity == "NORMAL"
-        assert z_score < 2
-
-    def test_elevated_value_2_less_than_z_less_3(self):
-        """Test elevated value (2 <= z < 3) is LOW."""
-        mean = 50
-        std = 10
-        value = 70  # z = 2
-
-        z_score = (value - mean) / std
-
-        if z_score < 2:
-            severity = "NORMAL"
-        elif z_score < 3:
-            severity = "LOW"
-        else:
-            severity = "HIGH"
-
-        assert severity == "LOW"
-
-    def test_high_anomaly_z_3_to_5(self):
-        """Test high anomaly (3 <= z < 5)."""
-        mean = 50
-        std = 10
-        value = 90  # z = 4
-
-        z_score = (value - mean) / std
-
-        if z_score < 3:
-            severity = "NORMAL"
-        elif z_score < 5:
-            severity = "HIGH"
-        else:
-            severity = "EXTREME"
-
-        assert severity == "HIGH"
-
-    def test_extreme_anomaly_z_greater_5(self):
-        """Test extreme anomaly (z >= 5)."""
-        mean = 50
-        std = 10
-        value = 100  # z = 5
-
-        z_score = (value - mean) / std
-
-        if z_score < 5:
-            severity = "HIGH"
-        else:
-            severity = "EXTREME"
-
-        assert severity == "EXTREME"
-        assert z_score >= 5
-
-
-class TestAnomalyDetectionMADFallback:
-    """Test anomaly detection fallback to MAD when std=0."""
-
-    def test_zero_mad_uses_percentile_rank(self):
-        """Test zero MAD falls back to percentile rank."""
-        mad = 0  # All values identical
-
-        if mad == 0:
-            # Fallback to percentile rank method
-            percentile_method = True
-        else:
-            percentile_method = False
-
-        assert percentile_method is True
-
-    def test_percentile_rank_calculation(self):
-        """Test percentile rank calculation as fallback."""
-        value = 65
-        historical = [50, 55, 60, 65, 70, 75, 80]
-
-        rank = sum(1 for v in historical if v <= value) / len(historical) * 100
-
-        assert abs(rank - 57.14) < 0.01  # Allow floating point variation
-
-    def test_percentile_threshold(self):
-        """Test percentile rank threshold for anomaly."""
-        rank = 95  # 95th percentile
-
-        if rank >= 90:
-            severity = "HIGH"
-        else:
-            severity = "NORMAL"
-
-        assert severity == "HIGH"
+        assert summary["total_checked"] == 0
+        assert summary["total_anomalies"] == 0
+        assert summary["normal"] == 0
 
 
 class TestEventDetection:
-    """Test pollution event detection."""
+    """Test production pollution event detection."""
 
-    def test_event_3_consecutive_high_anomalies(self):
-        """Test 3 consecutive HIGH anomalies trigger event."""
-        observations = [
-            {"severity": "HIGH", "score": 3.2},
-            {"severity": "HIGH", "score": 3.5},
-            {"severity": "HIGH", "score": 3.1},
+    def test_three_consecutive_high_anomalies(self, event_detector):
+        anomalies = [
+            make_anomaly(10),
+            make_anomaly(11),
+            make_anomaly(12),
         ]
 
-        # Check for 3 consecutive HIGH
-        is_event = (
-            len(observations) >= 3 and
-            all(o["severity"] == "HIGH" for o in observations[-3:])
+        events = event_detector.detect_events(anomalies)
+
+        assert len(events) == 1
+        assert events[0]["location_id"] == "kolkata"
+        assert events[0]["pollutant"] == "pm25"
+        assert events[0]["anomaly_count"] == 3
+        assert events[0]["severity"] == "HIGH"
+
+    def test_two_high_anomalies_do_not_trigger_event(
+        self, event_detector
+    ):
+        anomalies = [
+            make_anomaly(10),
+            make_anomaly(11),
+        ]
+
+        events = event_detector.detect_events(anomalies)
+
+        assert events == []
+
+    def test_normal_anomalies_do_not_trigger_event(
+        self, event_detector
+    ):
+        anomalies = [
+            make_anomaly(10, severity="NORMAL"),
+            make_anomaly(11, severity="NORMAL"),
+            make_anomaly(12, severity="NORMAL"),
+        ]
+
+        events = event_detector.detect_events(anomalies)
+
+        assert events == []
+
+    def test_three_anomalies_within_four_hour_window(
+        self, event_detector
+    ):
+        anomalies = [
+            make_anomaly(9),
+            make_anomaly(10),
+            make_anomaly(12),
+        ]
+
+        events = event_detector.detect_events(anomalies)
+
+        assert len(events) == 1
+        assert events[0]["anomaly_count"] == 3
+
+    def test_anomalies_outside_four_hour_window(
+        self, event_detector
+    ):
+        anomalies = [
+            make_anomaly(9),
+            make_anomaly(10),
+            make_anomaly(14),
+        ]
+
+        events = event_detector.detect_events(anomalies)
+
+        assert events == []
+
+    def test_iso_timestamp_support(self, event_detector):
+        anomalies = [
+            make_anomaly(10),
+            make_anomaly(11),
+            make_anomaly(12),
+        ]
+
+        events = event_detector.detect_events(anomalies)
+
+        assert len(events) == 1
+        assert events[0]["start_time"].startswith("2026-08-15T10:00")
+
+    def test_unordered_anomalies_are_sorted(self, event_detector):
+        anomalies = [
+            make_anomaly(12),
+            make_anomaly(10),
+            make_anomaly(11),
+        ]
+
+        events = event_detector.detect_events(anomalies)
+
+        assert len(events) == 1
+        assert events[0]["anomaly_count"] == 3
+
+    def test_invalid_timestamp_is_skipped(self, event_detector):
+        anomalies = [
+            make_anomaly(10),
+            make_anomaly(11),
+            {
+                **make_anomaly(12),
+                "hour_start": "invalid-timestamp",
+            },
+        ]
+
+        events = event_detector.detect_events(anomalies)
+
+        assert events == []
+
+    def test_different_locations_are_not_combined(
+        self, event_detector
+    ):
+        anomalies = [
+            make_anomaly(10),
+            make_anomaly(11),
+            make_anomaly(12),
+            {
+                **make_anomaly(10),
+                "location_id": "delhi",
+            },
+            {
+                **make_anomaly(11),
+                "location_id": "delhi",
+            },
+            {
+                **make_anomaly(12),
+                "location_id": "delhi",
+            },
+        ]
+
+        events = event_detector.detect_events(anomalies)
+
+        assert len(events) == 2
+        assert {event["location_id"] for event in events} == {
+            "kolkata",
+            "delhi",
+        }
+
+    def test_event_statistics(self, event_detector):
+        anomalies = [
+            make_anomaly(10, value=50.0, robust_z=3.0),
+            make_anomaly(11, value=70.0, robust_z=4.0),
+            make_anomaly(12, value=90.0, robust_z=5.0),
+        ]
+
+        events = event_detector.detect_events(anomalies)
+
+        assert len(events) == 1
+
+        event = events[0]
+
+        assert event["peak_value"] == 90.0
+        assert event["mean_value"] == pytest.approx(70.0)
+        assert event["peak_anomaly_score"] == 5.0
+        assert event["duration_hours"] == 3
+        assert event["anomaly_count"] == 3
+
+    def test_empty_event_input(self, event_detector):
+        assert event_detector.detect_events([]) == []
+
+    def test_event_id_is_deterministic(self, event_detector):
+        start = datetime(
+            2026, 8, 15, 10, 0, tzinfo=timezone.utc
         )
 
-        assert is_event is True
-
-    def test_event_not_triggered_2_high(self):
-        """Test 2 HIGH anomalies don't trigger event."""
-        observations = [
-            {"severity": "HIGH", "score": 3.2},
-            {"severity": "HIGH", "score": 3.5},
-        ]
-
-        is_event = (
-            len(observations) >= 3 and
-            all(o["severity"] == "HIGH" for o in observations[-3:])
+        first = event_detector._generate_event_id(
+            "kolkata", "pm25", start
+        )
+        second = event_detector._generate_event_id(
+            "kolkata", "pm25", start
         )
 
-        assert is_event is False
+        assert first == second
 
-    def test_event_triggered_high_in_4h_window(self):
-        """Test 3+ HIGH in 4-hour rolling window."""
-        times = [
-            datetime(2026, 8, 15, 10, 0),
-            datetime(2026, 8, 15, 11, 0),
-            datetime(2026, 8, 15, 13, 0),
-        ]
-
-        high_severities = [
-            {"severity": "HIGH", "time": times[0]},
-            {"severity": "HIGH", "time": times[1]},
-            {"severity": "HIGH", "time": times[2]},
-        ]
-
-        # Check if 3+ HIGH in last 4 hours
-        window_start = times[-1] - timedelta(hours=4)
-        in_window = [h for h in high_severities if h["time"] >= window_start]
-
-        is_event = len(in_window) >= 3
-
-        assert is_event is True
-
-
-class TestEventMerging:
-    """Test event merging for adjacent events."""
-
-    def test_events_30_minutes_apart_merged(self):
-        """Test events <= 30 min apart are merged."""
-        event1_end = datetime(2026, 8, 15, 10, 30, 0)
-        event2_start = datetime(2026, 8, 15, 11, 0, 0)
-
-        gap_minutes = (event2_start - event1_end).total_seconds() / 60
-
-        should_merge = gap_minutes <= 30
-
-        assert should_merge is True
-
-    def test_events_31_minutes_apart_not_merged(self):
-        """Test events > 30 min apart not merged."""
-        event1_end = datetime(2026, 8, 15, 10, 30, 0)
-        event2_start = datetime(2026, 8, 15, 11, 1, 0)
-
-        gap_minutes = (event2_start - event1_end).total_seconds() / 60
-
-        should_merge = gap_minutes <= 30
-
-        assert should_merge is False
-
-    def test_event_merging_consolidates_duration(self):
-        """Test event merging consolidates duration."""
+    def test_events_within_one_hour_are_adjacent(
+        self, event_detector
+    ):
         event1 = {
-            "start": datetime(2026, 8, 15, 10, 0, 0),
-            "end": datetime(2026, 8, 15, 11, 0, 0),
+            "start_time": "2026-08-15T10:00:00+00:00",
+            "end_time": "2026-08-15T11:00:00+00:00",
+        }
+        event2 = {
+            "start_time": "2026-08-15T12:00:00+00:00",
+            "end_time": "2026-08-15T13:00:00+00:00",
+        }
+
+        assert event_detector._events_are_adjacent(
+            event1, event2
+        ) is True
+
+    def test_events_more_than_one_hour_apart_not_adjacent(
+        self, event_detector
+    ):
+        event1 = {
+            "start_time": "2026-08-15T10:00:00+00:00",
+            "end_time": "2026-08-15T11:00:00+00:00",
+        }
+        event2 = {
+            "start_time": "2026-08-15T13:00:00+00:00",
+            "end_time": "2026-08-15T14:00:00+00:00",
+        }
+
+        assert event_detector._events_are_adjacent(
+            event1, event2
+        ) is False
+
+    def test_merge_event_statistics(self, event_detector):
+        event1 = {
+            "event_id": "event1",
+            "location_id": "kolkata",
+            "pollutant": "pm25",
+            "start_time": "2026-08-15T10:00:00+00:00",
+            "end_time": "2026-08-15T11:00:00+00:00",
+            "duration_hours": 2,
+            "peak_value": 60.0,
+            "mean_value": 50.0,
+            "peak_anomaly_score": 3.0,
+            "severity": "HIGH",
+            "anomaly_count": 2,
         }
 
         event2 = {
-            "start": datetime(2026, 8, 15, 11, 20, 0),
-            "end": datetime(2026, 8, 15, 12, 0, 0),
+            "event_id": "event2",
+            "location_id": "kolkata",
+            "pollutant": "pm25",
+            "start_time": "2026-08-15T12:00:00+00:00",
+            "end_time": "2026-08-15T13:00:00+00:00",
+            "duration_hours": 2,
+            "peak_value": 100.0,
+            "mean_value": 80.0,
+            "peak_anomaly_score": 5.0,
+            "severity": "EXTREME",
+            "anomaly_count": 2,
         }
 
-        merged = {
-            "start": event1["start"],
-            "end": event2["end"],
+        merged = event_detector._merge_two_events(
+            event1, event2
+        )
+
+        assert merged["peak_value"] == 100.0
+        assert merged["mean_value"] == pytest.approx(65.0)
+        assert merged["peak_anomaly_score"] == 5.0
+        assert merged["severity"] == "EXTREME"
+        assert merged["anomaly_count"] == 4
+        assert merged["duration_hours"] == 4
+
+    def test_merge_events_with_missing_values(self, event_detector):
+        event1 = {
+            "event_id": "event1",
+            "location_id": "kolkata",
+            "pollutant": "pm25",
+            "start_time": "2026-08-15T10:00:00+00:00",
+            "end_time": "2026-08-15T11:00:00+00:00",
+            "peak_value": None,
+            "mean_value": None,
+            "peak_anomaly_score": 3.0,
+            "severity": "HIGH",
+            "anomaly_count": 2,
         }
 
-        duration = (merged["end"] - merged["start"]).total_seconds() / 3600
+        event2 = {
+            "event_id": "event2",
+            "location_id": "kolkata",
+            "pollutant": "pm25",
+            "start_time": "2026-08-15T12:00:00+00:00",
+            "end_time": "2026-08-15T13:00:00+00:00",
+            "peak_value": 80.0,
+            "mean_value": 80.0,
+            "peak_anomaly_score": 4.0,
+            "severity": "SEVERE",
+            "anomaly_count": 2,
+        }
 
-        assert duration == 2.0  # 2 hours total
+        merged = event_detector._merge_two_events(
+            event1, event2
+        )
+
+        assert merged["peak_value"] == 80.0
+        assert merged["mean_value"] == 80.0
+        assert merged["anomaly_count"] == 4
+        assert merged["severity"] == "SEVERE"
 
 
 class TestStationHealthScoring:
-    """Test station health score calculation."""
+    """Test production station health scoring."""
 
-    def test_healthy_station_80_to_100(self):
-        """Test healthy station has score 80-100."""
-        score = 92
+    def test_healthy_station(self, health_scorer):
+        score, penalties = health_scorer._calculate_health_score({
+            "availability_pct": 100.0,
+            "missing_rate": 0.0,
+            "duplicate_rate": 0.0,
+            "stale_rate": 0.0,
+            "flatline_rate": 0.0,
+            "outlier_rate": 0.0,
+        })
 
-        if score >= 80:
-            status = "healthy"
-        elif score >= 50:
-            status = "degraded"
-        else:
-            status = "offline"
+        assert score == 100.0
+        assert penalties == []
+        assert health_scorer._classify_status(score) == "healthy"
 
-        assert status == "healthy"
+    def test_degraded_station(self, health_scorer):
+        score = health_scorer._classify_status(65.0)
 
-    def test_degraded_station_50_to_79(self):
-        """Test degraded station has score 50-79."""
-        score = 65
+        assert score == HealthStatus.DEGRADED.value
 
-        if score >= 80:
-            status = "healthy"
-        elif score >= 50:
-            status = "degraded"
-        else:
-            status = "offline"
+    def test_offline_station(self, health_scorer):
+        score = health_scorer._classify_status(45.0)
 
-        assert status == "degraded"
+        assert score == HealthStatus.OFFLINE.value
 
-    def test_offline_station_below_50(self):
-        """Test offline station has score < 50."""
-        score = 45
+    def test_health_score_penalties(self, health_scorer):
+        metrics = {
+            "availability_pct": 70.0,
+            "missing_rate": 15.0,
+            "duplicate_rate": 8.0,
+            "stale_rate": 7.0,
+            "flatline_rate": 12.0,
+            "outlier_rate": 3.0,
+        }
 
-        if score >= 80:
-            status = "healthy"
-        elif score >= 50:
-            status = "degraded"
-        else:
-            status = "offline"
+        score, penalties = health_scorer._calculate_health_score(
+            metrics
+        )
 
-        assert status == "offline"
+        assert score == 15.0
+        assert len(penalties) == 6
+        assert health_scorer._classify_status(score) == "offline"
 
-    def test_station_health_based_on_uptime_and_quality(self):
-        """Test health score combines uptime and data quality."""
-        uptime_pct = 98.5  # 98.5% uptime
-        quality_pct = 96.0  # 96% valid data
+    def test_health_score_never_below_zero(self, health_scorer):
+        metrics = {
+            "availability_pct": 0.0,
+            "missing_rate": 100.0,
+            "duplicate_rate": 100.0,
+            "stale_rate": 100.0,
+            "flatline_rate": 100.0,
+            "outlier_rate": 100.0,
+        }
 
-        health_score = (uptime_pct + quality_pct) / 2
+        score, _ = health_scorer._calculate_health_score(
+            metrics
+        )
 
-        assert health_score == 97.25
-        assert health_score >= 80
+        assert score == 0.0
 
+    def test_health_score_threshold_boundaries(self, health_scorer):
+        assert health_scorer._classify_status(80.0) == "healthy"
+        assert health_scorer._classify_status(79.99) == "degraded"
+        assert health_scorer._classify_status(50.0) == "degraded"
+        assert health_scorer._classify_status(49.99) == "offline"
 
-class TestAnomalyReporting:
-    """Test anomaly statistics reporting."""
+    def test_station_health_result(self, health_scorer):
+        metrics = {
+            "availability_pct": 98.0,
+            "missing_rate": 2.0,
+            "duplicate_rate": 1.0,
+            "stale_rate": 0.0,
+            "flatline_rate": 0.0,
+            "outlier_rate": 0.0,
+        }
 
-    def test_anomaly_count_per_hour(self):
-        """Test anomaly count per hour is calculated."""
-        anomalies = [
-            {"time": datetime(2026, 8, 15, 10, 15), "severity": "HIGH"},
-            {"time": datetime(2026, 8, 15, 10, 45), "severity": "HIGH"},
-            {"time": datetime(2026, 8, 15, 11, 30), "severity": "HIGH"},
+        health_scorer._calculate_station_metrics = (
+            lambda **kwargs: metrics
+        )
+
+        result = health_scorer.score_station_health(
+            station_id="station_001",
+            window_days=30,
+            end_date=date(2026, 8, 15),
+        )
+
+        assert result["station_id"] == "station_001"
+        assert result["window_days"] == 30
+        assert result["health_score"] == 100.0
+        assert result["status"] == "healthy"
+        assert result["penalties_applied"] == []
+        assert result["computed_at"] is not None
+
+    def test_batch_station_health(self, health_scorer):
+        results = health_scorer.score_batch(
+            station_ids=["station_001", "station_002"],
+            window_days=30,
+            end_date=date(2026, 8, 15),
+        )
+
+        assert len(results) == 2
+        assert results[0]["station_id"] == "station_001"
+        assert results[1]["station_id"] == "station_002"
+
+    def test_empty_health_summary(self, health_scorer):
+        summary = health_scorer.get_health_summary([])
+
+        assert summary["total_stations"] == 0
+        assert summary["healthy"] == 0
+        assert summary["degraded"] == 0
+        assert summary["offline"] == 0
+        assert summary["mean_health_score"] is None
+
+    def test_health_summary_statistics(self, health_scorer):
+        health_scores = [
+            {"health_score": 90.0, "status": "healthy"},
+            {"health_score": 60.0, "status": "degraded"},
+            {"health_score": 40.0, "status": "offline"},
         ]
 
-        # Group by hour
-        hourly_counts = {}
-        for a in anomalies:
-            hour = a["time"].replace(minute=0, second=0, microsecond=0)
-            hourly_counts[hour] = hourly_counts.get(hour, 0) + 1
+        summary = health_scorer.get_health_summary(
+            health_scores
+        )
 
-        assert len(hourly_counts) == 2
-        assert hourly_counts[datetime(2026, 8, 15, 10, 0)] == 2
-        assert hourly_counts[datetime(2026, 8, 15, 11, 0)] == 1
+        assert summary["total_stations"] == 3
+        assert summary["healthy"] == 1
+        assert summary["degraded"] == 1
+        assert summary["offline"] == 1
+        assert summary["mean_health_score"] == pytest.approx(
+            190.0 / 3
+        )
+        assert summary["median_health_score"] == 60.0
 
 
 if __name__ == "__main__":
