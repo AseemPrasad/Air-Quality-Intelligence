@@ -65,7 +65,7 @@ open_meteo:
   options:
     # Timezone for returned times
     timezone: "Asia/Kolkata"
-    # Temperature unit
+    # Temperature unit 
     temperature_unit: "celsius"
     # Wind speed unit
     windspeed_unit: "kmh"
