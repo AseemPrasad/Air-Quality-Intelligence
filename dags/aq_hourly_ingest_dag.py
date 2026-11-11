@@ -205,11 +205,17 @@ def ingest_weather(**context: Any) -> Dict[str, Any]:
 def validate_raw(**context: Any) -> Dict[str, Any]:
     """Validate raw ingested data."""
     execution_date = context["execution_date"]
-    openaq_records = context["task_instance"].xcom_pull(
-        task_ids="ingest_openaq", key="openaq_records"
+    openaq_records = (
+        context["task_instance"].xcom_pull(
+            task_ids="ingest_openaq", key="openaq_records"
+        )
+        or 0
     )
-    weather_records = context["task_instance"].xcom_pull(
-        task_ids="ingest_weather", key="weather_records"
+    weather_records = (
+        context["task_instance"].xcom_pull(
+            task_ids="ingest_weather", key="weather_records"
+        )
+        or 0
     )
 
     log_data = {
