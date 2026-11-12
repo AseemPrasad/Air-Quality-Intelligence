@@ -1,8 +1,10 @@
+
 """FastAPI application for Air Quality Intelligence Platform."""
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,76 +14,132 @@ from aq_engine.api.middleware import global_audit_and_exception_middleware
 from aq_engine.api.observations import router as observations_router
 from aq_engine.common.logger import get_logger, load_logging_config
 
-logger = get_logger(__name__)
 
-# Version info
 __version__ = "0.1.0"
+
+logger = get_logger(__name__)
 
 
 class HealthStatus:
-    """Manage application health status."""
+    """Track application component health."""
 
     def __init__(self):
-        """Initialize health status."""
         self.database_ok = False
         self.models_ok = False
         self.startup_time = None
 
-    def to_dict(self) -> dict:
-        """Convert to response dict."""
+    @property
+    def is_healthy(self):
+        return self.database_ok and self.models_ok
+
+    def to_dict(self):
         return {
-            "status": "healthy" if (self.database_ok and self.models_ok) else "degraded",
+            "status": "healthy" if self.is_healthy else "degraded",
             "database": "ok" if self.database_ok else "error",
             "models": "ok" if self.models_ok else "error",
-            "startup_time": self.startup_time.isoformat() if self.startup_time else None,
+            "startup_time": (
+                self.startup_time.isoformat()
+                if self.startup_time else None
+            ),
         }
 
 
-# Global health status
 health_status = HealthStatus()
+
+
+def utc_now():
+    """Return current UTC timestamp."""
+
+    return datetime.now(timezone.utc)
+
+
+def validate_location_id(location_id: str) -> str:
+    """Validate location identifier."""
+
+    location_id = location_id.strip().lower()
+
+    if not location_id:
+        raise ValueError("location_id cannot be empty")
+
+    if not re.fullmatch(r"[a-z0-9_-]{1,100}", location_id):
+        raise ValueError("Invalid location_id format")
+
+    return location_id
+
+
+def create_error_response(
+    request: Request,
+    message: str,
+    code: int,
+):
+    """Create a standardized error response."""
+
+    return JSONResponse(
+        status_code=code,
+        content={
+            "error": message,
+            "request_id": getattr(
+                request.state, "request_id", "unknown"
+            ),
+            "timestamp": utc_now().isoformat(),
+        },
+    )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application startup and shutdown."""
-    # Startup
+
+    health_status.database_ok = False
+    health_status.models_ok = False
+    health_status.startup_time = None
+
     Path("data/logs").mkdir(parents=True, exist_ok=True)
     load_logging_config("configs/logging.yaml")
-    logger.info("Starting Air Quality Intelligence Platform...")
+
+    logger.info("Starting Air Quality Intelligence Platform")
 
     try:
-        # Initialize database (placeholder)
-        logger.info("Initializing database...")
-        health_status.database_ok = True
+        # TODO: Initialize the actual database connection here.
+        logger.info("Database initialization pending.")
 
-        # Load model registry (placeholder)
-        logger.info("Loading model registry...")
-        health_status.models_ok = True
+        # TODO: Load and validate the actual ML model registry here.
+        logger.info("ML model initialization pending.")
 
-        health_status.startup_time = datetime.now(timezone.utc)
-        logger.info("Application started successfully")
-    except Exception as e:
-        logger.error(f"Startup error: {e}")
+        # Do not mark unavailable services as healthy.
+        health_status.database_ok = False
+        health_status.models_ok = False
+
+        health_status.startup_time = utc_now()
+
+        app.state.health_status = health_status
+
+        logger.info("Application startup completed.")
+
+        yield
+
+    except Exception:
+        logger.exception("Application lifecycle error")
         raise
 
-    yield
+    finally:
+        logger.info("Shutting down Air Quality Intelligence Platform")
 
-    # Shutdown
-    logger.info("Shutting down Air Quality Intelligence Platform...")
+        try:
+            # TODO: Close database connections.
+            # TODO: Release loaded model resources.
+            logger.info("Resource cleanup completed.")
 
-    try:
-        # Close database connections (placeholder)
-        logger.info("Closing database connections...")
+        except Exception:
+            logger.exception("Resource cleanup failed")
 
-        # Clean up resources (placeholder)
-        logger.info("Cleaning up resources...")
+        finally:
+            health_status.database_ok = False
+            health_status.models_ok = False
 
-        logger.info("Application shut down gracefully")
-    except Exception as e:
-        logger.error(f"Shutdown error: {e}")
+            logger.info("Application shutdown completed.")
 
 
-# Create FastAPI app
 app = FastAPI(
     title="Air Quality Intelligence Platform",
     description="PM2.5 forecasting with ML and baseline models",
@@ -89,58 +147,63 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Include routers
+
+# Register observation routes
 app.include_router(observations_router)
 
 
-# CORS middleware
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000",    # Dashboard
-        "http://localhost:8501",    # Streamlit
-        "http://localhost:8000",    # FastAPI docs
+        "http://localhost:3000",
+        "http://localhost:8501",
+        "http://localhost:8000",
     ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
 )
 
 
-# Register the same structured audit middleware exercised in isolation by unit tests.
+# Register audit middleware
 app.middleware("http")(global_audit_and_exception_middleware)
 
 
-# Exception handler
+# Exception handlers
 @app.exception_handler(ValueError)
-async def value_error_handler(request: Request, exc: ValueError):
-    """Handle ValueError (invalid input)."""
-    return JSONResponse(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        content={
-            "error": str(exc),
-            "request_id": getattr(request.state, "request_id", "unknown"),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        },
+async def value_error_handler(
+    request: Request,
+    exc: ValueError,
+):
+    """Handle invalid input."""
+
+    logger.warning("Invalid input: %s", exc)
+
+    return create_error_response(
+        request,
+        str(exc),
+        status.HTTP_400_BAD_REQUEST,
     )
 
 
 @app.exception_handler(Exception)
-async def generic_exception_handler(request: Request, exc: Exception):
-    """Handle generic exceptions."""
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+async def generic_exception_handler(
+    request: Request,
+    exc: Exception,
+):
+    """Handle unexpected exceptions."""
 
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={
-            "error": "Internal server error",
-            "request_id": getattr(request.state, "request_id", "unknown"),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        },
+    logger.exception("Unhandled application exception")
+
+    return create_error_response(
+        request,
+        "Internal server error",
+        status.HTTP_500_INTERNAL_SERVER_ERROR,
     )
 
 
-# Health check endpoint
+# Health endpoint
 @app.get(
     "/health",
     tags=["Health"],
@@ -148,38 +211,44 @@ async def generic_exception_handler(request: Request, exc: Exception):
     description="Check application health status",
     response_model=dict,
 )
-async def health_check(request: Request) -> dict:
-    """Health check endpoint.
+async def health_check(request: Request):
+    """Return application health information."""
 
-    Returns:
-        Health status including database and model availability
-    """
-    response = {
+    result = {
         "version": __version__,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": utc_now().isoformat(),
         **health_status.to_dict(),
     }
 
-    logger.debug("Health check requested", extra={
-        "request_id": getattr(request.state, "request_id", "unknown"),
-    })
+    logger.debug(
+        "Health check requested",
+        extra={
+            "request_id": getattr(
+                request.state, "request_id", "unknown"
+            )
+        },
+    )
 
-    return response
+    return JSONResponse(
+        status_code=(
+            status.HTTP_200_OK
+            if health_status.is_healthy
+            else status.HTTP_503_SERVICE_UNAVAILABLE
+        ),
+        content=result,
+    )
 
 
 # Root endpoint
 @app.get(
     "/",
     tags=["Root"],
-    summary="API info",
-    description="Get API information",
+    summary="API information",
+    description="Get platform information",
 )
-async def root() -> dict:
-    """Root endpoint with API information.
+async def root():
+    """Return basic API information."""
 
-    Returns:
-        Basic API information
-    """
     return {
         "name": "Air Quality Intelligence Platform",
         "version": __version__,
@@ -188,7 +257,7 @@ async def root() -> dict:
     }
 
 
-# Prediction endpoint (stub)
+# Prediction endpoint
 @app.get(
     "/predictions/{location_id}",
     tags=["Predictions"],
@@ -198,49 +267,29 @@ async def root() -> dict:
 async def get_predictions(
     location_id: str,
     request: Request,
-) -> dict:
-    """Get predictions for a location.
+):
+    """Return PM2.5 predictions for a location."""
 
-    Args:
-        location_id: Location identifier (e.g., 'kolkata')
+    location_id = validate_location_id(location_id)
 
-    Returns:
-        Multi-horizon prediction data
+    # Actual ML model integration is required here.
+    # Do not return fabricated predictions as real forecasts.
+    logger.warning(
+        "Prediction service is not configured for location: %s",
+        location_id,
+    )
 
-    Raises:
-        ValueError: If location_id is invalid
-    """
-    if not location_id:
-        raise ValueError("location_id cannot be empty")
-
-    # Stub response
-    return {
-        "location_id": location_id,
-        "predictions": [
-            {
-                "horizon_minutes": 60,
-                "predicted_pm25": 50.0,
-                "lower_bound": 45.0,
-                "upper_bound": 55.0,
-                "confidence": 0.85,
-            },
-            {
-                "horizon_minutes": 180,
-                "predicted_pm25": 52.0,
-                "lower_bound": 46.0,
-                "upper_bound": 58.0,
-                "confidence": 0.75,
-            },
-            {
-                "horizon_minutes": 360,
-                "predicted_pm25": 54.0,
-                "lower_bound": 47.0,
-                "upper_bound": 61.0,
-                "confidence": 0.65,
-            },
-        ],
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-    }
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={
+            "error": "Prediction service is currently unavailable.",
+            "location_id": location_id,
+            "request_id": getattr(
+                request.state, "request_id", "unknown"
+            ),
+            "timestamp": utc_now().isoformat(),
+        },
+    )
 
 
 if __name__ == "__main__":
@@ -253,3 +302,4 @@ if __name__ == "__main__":
         reload=True,
         log_level="info",
     )
+
