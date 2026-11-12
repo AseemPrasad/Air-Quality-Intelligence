@@ -1,12 +1,61 @@
+
 name: Bug Report
 description: Report a bug or unexpected behavior
 title: "[BUG] "
 labels: ["bug", "needs-triage"]
+
 body:
   - type: markdown
     attributes:
       value: |
         Thanks for taking the time to report this bug!
+
+  - type: textarea
+    id: bug_description
+    attributes:
+      label: Describe the bug
+      description: Clearly explain the problem.
+      placeholder: Describe what happened.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Explain how to reproduce the bug.
+      placeholder: |
+        1. Go to...
+        2. Click on...
+        3. See the error.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Explain what you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: Add screenshots if applicable.
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Mention your OS, browser, and version.
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional context
+      description: Add any other information about the bug.
 
   - type: textarea
     id: description
