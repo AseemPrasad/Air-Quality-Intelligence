@@ -1,75 +1,87 @@
+
 # Air Quality Intelligence Platform - API Service
-# Multi-stage build for optimized production image
+# Multi-stage production build
 
 # ============================================================================
-# BUILDER STAGE: Compile dependencies
+# BUILDER STAGE
 # ============================================================================
-FROM python:3.12.1-slim-bookworm as builder
+FROM python:3.12-slim-bookworm AS builder
 
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
 
-# Install build dependencies
+WORKDIR /build
+
+# Install packages required to compile Python dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user for build
-RUN groupadd -r aqworker && useradd -r -g aqworker aqworker
+# Create an isolated environment for application dependencies
+RUN python -m venv /opt/venv
 
-WORKDIR /build
-RUN chown -R aqworker:aqworker /build
+ENV PATH="/opt/venv/bin:$PATH"
 
-USER aqworker
-
-# Copy and install dependencies
+# Copy dependency and package metadata
 COPY pyproject.toml ./
-RUN pip install --user --no-warn-script-location -e .
+
+# Copy application source before installing the project.
+# This avoids an editable installation that references /build.
+COPY src/ ./src/
+
+# If pyproject.toml references README.md or other build files,
+# copy those files here as well.
+RUN pip install --no-cache-dir .
 
 # ============================================================================
-# RUNTIME STAGE: Minimal production image
+# RUNTIME STAGE
 # ============================================================================
-FROM python:3.12.1-slim-bookworm
+FROM python:3.12-slim-bookworm AS runtime
 
-LABEL maintainer="Air Quality Engineering Team" \
-      description="FastAPI service for Air Quality Intelligence Platform" \
-      version="0.1.0"
+LABEL org.opencontainers.image.title="Air Quality Intelligence Platform API" \
+      org.opencontainers.image.description="FastAPI service for air quality intelligence" \
+      org.opencontainers.image.version="0.1.0"
 
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PATH="/opt/venv/bin:$PATH" \
+    HOME="/home/aqworker"
 
-# Install runtime dependencies only
+# Install only required runtime libraries.
+# libpq5 is needed when the application uses dynamically linked
+# PostgreSQL client libraries.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
-    curl \
     ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# Create non-root user
-RUN groupadd -r aqworker && useradd -r -g aqworker aqworker
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 10001 aqworker \
+    && useradd --system --uid 10001 --gid aqworker \
+       --create-home --home-dir /home/aqworker \
+       --shell /usr/sbin/nologin aqworker
 
 WORKDIR /app
-RUN chown -R aqworker:aqworker /app
 
-USER aqworker
+# Copy the installed Python environment from the builder
+COPY --from=builder /opt/venv /opt/venv
 
-# Copy Python dependencies from builder
-COPY --from=builder --chown=aqworker:aqworker /root/.local /home/aqworker/.local
-
-# Copy application source
+# Copy runtime configuration and application resources
 COPY --chown=aqworker:aqworker src/ /app/src/
 COPY --chown=aqworker:aqworker configs/ /app/configs/
 
-ENV PATH=/home/aqworker/.local/bin:$PATH
+# Allow Python to find source modules if the package layout requires it
+ENV PYTHONPATH="/app/src"
+
+# Run without root privileges
+USER 10001:10001
 
 EXPOSE 8000
 
-# Health check: verify API responds
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8000/api/system/health || exit 1
+# Health check without installing curl in the runtime image
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/system/health', timeout=4)" || exit 1
 
 CMD ["uvicorn", "aq_engine.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
